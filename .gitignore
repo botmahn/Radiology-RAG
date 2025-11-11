@@ -1,0 +1,5 @@
+DBs/
+__pycache__/
+pretrained_models/
+*.pdf
+temp/

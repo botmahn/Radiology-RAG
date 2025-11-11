@@ -1,0 +1,21 @@
+models:
+  isd_model: "amsaravi/medgemma-4b-it:q8"   # VLM for Initial Short Diagnosis
+  final_model: "amsaravi/medgemma-4b-it:q8" # VLM for final report (image+text)
+  chat_model: "amsaravi/medgemma-4b-it:q8"  # pure text chat model after report
+
+ollama:
+  temperature: 0.2
+  top_p: 0.9
+  num_ctx: 4096
+
+rag:
+  use_rex: false
+  k: 3
+  rerank_top_n: 3
+
+paths:
+  rexgradient_db_path: "/Users/namanmishra/Documents/Code/iiith_courses/lma/major_project/Radiology-RAG/DBs/rexgradient/images"
+  rexgradient_collection: "images"
+  multicare_db_path: "/Users/namanmishra/Documents/Code/iiith_courses/lma/major_project/Radiology-RAG/DBs/text_db_medicare/chroma_db_medical_multicare/"
+  multicare_docstore_pkl_path: "/Users/namanmishra/Documents/Code/iiith_courses/lma/major_project/Radiology-RAG/DBs/text_db_medicare/docstore_medical_multicare.pkl"
+  multicare_collection: "medical_multicare_text"
