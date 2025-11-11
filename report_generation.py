@@ -141,6 +141,8 @@ Based on the chest X-ray image and all provided information above, generate a st
 4. RECOMMENDATIONS: Follow-up care and additional studies if needed
 
 Be thorough, professional, and clinically accurate. Consider all the provided context including the RexGradient image match."""
+    
+    print(f"Final Prompt: {prompt}")
 
     try:
         print(f"Generating Final Report with {model}...")
@@ -159,9 +161,8 @@ Be thorough, professional, and clinically accurate. Consider all the provided co
     
     except Exception as e:
         st.error(f"Error generating final report: {e}")
-        # Fallback to text-only model
         try:
-            text_model = "gemma3:1b"
+            text_model = "amsaravi/medgemma-4b-it:q8"
             response = ollama.chat(
                 model=text_model,
                 messages=[{
@@ -183,7 +184,7 @@ class MedicalXRayPipeline:
             multicare_docstore_pkl_path: str,
             multicare_db_collection_name: str = "medical_multicare_text",
             multicare_embedding_model: str = "pritamdeka/S-PubMedBert-MS-MARCO",
-            multicare_rerank_model: str = "gemma3:1b",
+            multicare_rerank_model: str = "amsaravi/medgemma-4b-it:q8",
 
     ):
 
@@ -262,7 +263,7 @@ class MedicalXRayPipeline:
         # Step 3: Retrieve similar cases (using ISD)
         # Step 4: Rerank
         st.info("Retrieving similar cases and reranking them...")
-        similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=3)
+        similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
         results['retrieved_cases'] = len(similar_docs)
         results['similar_cases'] = similar_docs
         st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
