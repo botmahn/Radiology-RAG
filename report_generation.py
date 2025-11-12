@@ -5,6 +5,7 @@ import ollama
 import datetime
 import json
 import re
+import math
 import streamlit as st
 st.cache_data.clear()
 st.cache_resource.clear()
@@ -249,25 +250,104 @@ class MedicalXRayPipeline:
         )
         results['initial_diagnosis'] = isd
         st.success("✓ Initial diagnosis (ISD) generated")
+        # ------------------------------------------------------
+        # NEW: Display the ISD (Initial Diagnosis) in Streamlit
+        # ------------------------------------------------------
+        st.write("### 🧠 Initial Diagnosis By MedGemma")
+
+        if isinstance(isd, dict):
+            # If model outputs something structured
+            text = isd.get("text") or isd.get("answer") or isd.get("prediction") or str(isd)
+            st.markdown(f"```\n{text}\n```")
+
+        elif isinstance(isd, list):
+            # Sometimes LLMs send a list of messages or choices
+            st.markdown("```\n" + "\n".join(map(str, isd)) + "\n```")
+
+        else:
+            # Raw string or unknown format
+            st.markdown(f"```\n{isd}\n```")
         
         # Step 2B: Generate ISD-Rex (Image-based retrieval)
         isd_rex = ""
         if use_rex:
             st.info("Retrieving image-based diagnosis (ISD-Rex) from RexGradient...")
-            isd_rex, isd_rex_similarity = self.rex_retriever.retrieve(query_image_path, return_score=True)
+            isd_rex, isd_rex_similarity = self.rex_retriever.retrieve(
+                query_image_path,
+                return_score=True
+            )
+
             results['isd_rex'] = isd_rex
-            st.success(f"✓ Image-based diagnosis (ISD-Rex) retrieved | Similarity Score: {isd_rex_similarity}")
+
+            # Display status
+            st.success(
+                f"✓ Image-based diagnosis (ISD-Rex) retrieved | Similarity Score: {isd_rex_similarity * 100.0:.2f}%"
+            )
+
+            # -----------------------------------------
+            # NEW: DISPLAY THE RETRIEVED TEXT PROPERLY
+            # -----------------------------------------
+            st.write("### 📝 Similar RexGradient Case")
+            if isinstance(isd_rex, dict):
+                # You can decide what fields you want to display
+                text = isd_rex.get("text", "")
+                st.markdown(f"```\n{text}\n```")
+            elif isinstance(isd_rex, str):
+                st.markdown(f"```\n{isd_rex}\n```")
+            else:
+                st.warning("Unexpected ISD-Rex format")
         else:
             results['isd_rex'] = "RexGradient retrieval disabled"
         
         # Step 3: Retrieve similar cases (using ISD)
         # Step 4: Rerank
+        # st.info("Retrieving similar cases and reranking them...")
+        # similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
+        # results['retrieved_cases'] = len(similar_docs)
+        # results['similar_cases'] = similar_docs
+        # st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
+        
         st.info("Retrieving similar cases and reranking them...")
         similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
         results['retrieved_cases'] = len(similar_docs)
         results['similar_cases'] = similar_docs
-        st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
-        
+
+        if similar_docs:
+            st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
+
+            st.write("### 🔍 MultiCare Similar Cases")
+
+            for i, doc in enumerate(similar_docs, 1):
+                raw_score = doc.get("score", None)
+                case_id = doc.get("case_id", "Unknown")
+                text = (doc.get("text") or "")
+                text_snippet = (text[:250] + "...") if text else ""
+
+                # Safely coerce to float if possible (handles numpy scalars / 0-D arrays)
+                score = None
+                try:
+                    # If it's a numpy array, take the scalar
+                    if hasattr(raw_score, "item"):
+                        raw_score = raw_score.item()
+                    score = float(raw_score)
+                    # Clamp to [0, 1] just in case
+                    score = max(0.0, min(1.0, score))
+                except Exception:
+                    score = None
+
+                if isinstance(score, float):
+                    pct = score * 100.0
+                    st.markdown(
+                        f"**Case {i}: {case_id}**  \n"
+                        f"🧮 **Similarity:** {score:.4f} ({pct:.2f}%)  \n"
+                        f"📄 **Excerpt:** {text_snippet}"
+                    )
+                else:
+                    st.markdown(
+                        f"**Case {i}: {case_id}**  \n"
+                        f"📄 **Excerpt:** {text_snippet}"
+                    )
+
         # Step 5: Generate final report (with ISD + ISD-Rex + Similar Cases)
         st.info("📝 Generating detailed report...")
         final_report = generate_final_report(

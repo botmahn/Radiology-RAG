@@ -10,8 +10,8 @@ ollama:
 
 rag:
   use_rex: true
-  k: 1
-  rerank_top_n: 1
+  k: 3
+  rerank_top_n: 3
 
 paths:
   rexgradient_db_path: "/Users/namanmishra/Documents/Code/iiith_courses/lma/major_project/Radiology-RAG/DBs/rexgradient/images"
