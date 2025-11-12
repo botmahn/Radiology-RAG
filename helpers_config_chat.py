@@ -12,26 +12,41 @@ def load_config(path: str = "configs/reportgen_config.yaml") -> dict:
     return cfg
 
 class OllamaChatSession:
-    """
-    Minimal chat wrapper over ollama.chat that keeps conversation context in memory.
-    Use ONLY for post-report general chat (no RAG).
-    """
     def __init__(self, model: str, temperature: float = 0.2, top_p: float = 0.9, num_ctx: int = 4096):
         self.model = model
-        self.params = {
-            "temperature": temperature,
-            "top_p": top_p,
-            "num_ctx": num_ctx,
-        }
-        self.history = []  # [{'role': 'user'/'assistant', 'content': '...'}]
+        self.temperature = temperature
+        self.top_p = top_p
+        self.num_ctx = num_ctx
 
-    def ask(self, prompt: str) -> str:
-        self.history.append({"role": "user", "content": prompt})
+    def ask(self, prompt: str, history: list[dict] | None = None, images: list[str] | None = None) -> str:
+        """
+        Send a chat turn with full history to Ollama.
+        history: list of dicts like {"role": "system"|"user"|"assistant", "content": str}
+        images: optional base64 strings (only used on the last user message)
+        """
+        # Build messages array from history (if provided)
+        messages = []
+        if history:
+            for m in history:
+                role = m.get("role", "user")
+                content = str(m.get("content", ""))
+                if not content.strip():
+                    continue
+                messages.append({"role": role, "content": content})
+
+        # Append current user turn
+        user_msg = {"role": "user", "content": prompt}
+        if images:
+            user_msg["images"] = images
+        messages.append(user_msg)
+
         resp = ollama.chat(
             model=self.model,
-            options=self.params,
-            messages=self.history,
+            messages=messages,
+            options={
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                "num_ctx": self.num_ctx,
+            },
         )
-        reply = resp["message"]["content"].strip()
-        self.history.append({"role": "assistant", "content": reply})
-        return reply
+        return resp["message"]["content"]

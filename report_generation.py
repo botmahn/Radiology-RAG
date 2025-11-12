@@ -368,6 +368,16 @@ def main(args):
                     st.session_state.final_report = results.get("final_report")
                     st.session_state.messages.append({
                         "role": "assistant",
+                        "content": f"### 🩻 Final Radiology Report\n\n{st.session_state.final_report}"
+                    })
+                    # final_report_text = st.session_state.final_report or ""
+                    # if final_report_text.strip():
+                    #     st.session_state.messages.append({
+                    #         "role": "assistant",
+                    #         "content": "### 📝 Final Report\n\n" + final_report_text
+                    #     })
+                    st.session_state.messages.append({
+                        "role": "assistant",
                         "content": "Report generated successfully! You can chat freely now, or say “Generate a PDF of this report” / “Send an email to you@host.com”."
                     })
                     st.success("Report Generated!")
@@ -388,20 +398,21 @@ def main(args):
     with col2:
         st.header("Actions / Chat")
 
-        # show history
+        # show entire chat history first
         for m in st.session_state.messages:
             with st.chat_message(m["role"]):
                 st.markdown(m["content"])
 
-        # chat input
+        # now place the chat input AFTER the history
         prompt = st.chat_input(
-            "Chat here. After a report, normal questions will use the Ollama chat model only.\n"
-            "Also supports: 'Generate a PDF of this report' or 'Send an email to you@host.com'"
+            "💬 Ask follow-up questions or say 'Generate a PDF of this report' / 'Send an email to you@host.com'"
         )
+
         if prompt:
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
+
 
             # intent helpers you already have
             recipient_email = parse_email_request(prompt)
@@ -473,9 +484,24 @@ def main(args):
             # C) Otherwise → Normal chat (NO RAG) using Ollama ONLY
             with st.chat_message("assistant"):
                 try:
-                    reply = st.session_state.chat_session.ask(prompt)
+                    # 🧠 Build a compact history from the last 20 messages, including the final report
+                    def _build_history(max_turns: int = 20) -> list[dict]:
+                        msgs = st.session_state.messages[-max_turns:]
+                        history = []
+                        for m in msgs:
+                            role = m.get("role", "user")
+                            content = str(m.get("content", ""))
+                            if content.strip():
+                                history.append({"role": role, "content": content})
+                        return history
+
+                    # 🧩 Construct conversation context and call Ollama with full history
+                    history = _build_history(max_turns=20)
+                    reply = st.session_state.chat_session.ask(prompt, history=history)
+
                     st.markdown(reply)
                     st.session_state.messages.append({"role": "assistant", "content": reply})
+
                 except Exception as e:
                     msg = f"Ollama chat failed: {e}"
                     st.error(msg)
