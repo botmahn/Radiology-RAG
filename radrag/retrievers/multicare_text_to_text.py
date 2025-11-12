@@ -18,6 +18,8 @@ try:
 except ImportError:
     from langchain_classic.retrievers import ParentDocumentRetriever
 
+import numpy as np
+
 os.environ["HF_HOME"] = "/Users/namanmishra/Documents/Code/iiith_courses/lma/major_project/Radiology-RAG/pretrained_models"
 
 # Compression / Reranking utilities

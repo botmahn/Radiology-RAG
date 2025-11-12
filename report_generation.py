@@ -254,9 +254,9 @@ class MedicalXRayPipeline:
         isd_rex = ""
         if use_rex:
             st.info("Retrieving image-based diagnosis (ISD-Rex) from RexGradient...")
-            isd_rex = self.rex_retriever.retrieve(query_image_path)
+            isd_rex, isd_rex_similarity = self.rex_retriever.retrieve(query_image_path, return_score=True)
             results['isd_rex'] = isd_rex
-            st.success("✓ Image-based diagnosis (ISD-Rex) retrieved")
+            st.success(f"✓ Image-based diagnosis (ISD-Rex) retrieved | Similarity Score: {isd_rex_similarity}")
         else:
             results['isd_rex'] = "RexGradient retrieval disabled"
         

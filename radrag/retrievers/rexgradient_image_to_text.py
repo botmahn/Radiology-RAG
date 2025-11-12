@@ -2,14 +2,14 @@
 # pip install chromadb transformers pillow torch sentencepiece huggingface_hub
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import os
 import torch
 from PIL import Image
 import chromadb
 from transformers import AutoProcessor, AutoModel
-
+import numpy as np
 # HF login (optional)
 try:
     from huggingface_hub import login as hf_login
@@ -29,18 +29,23 @@ def _l2_normalize(t: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.normalize(t, p=2, dim=-1)
 
 
+def _cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Cosine similarity for 1D tensors."""
+    a = _l2_normalize(a.view(-1))
+    b = _l2_normalize(b.view(-1))
+    return float(torch.dot(a, b).item())
+
+
 def _maybe_hf_login(
     hf_cache_dir: Optional[str],
     hf_token: Optional[str] = None,
     quiet: bool = True,
 ) -> None:
     """Best-effort Hugging Face login & optional cache setup."""
-    # Respect user-provided cache dir
     if hf_cache_dir:
         os.environ["HF_HOME"] = hf_cache_dir
         os.environ["HUGGINGFACE_HUB_CACHE"] = hf_cache_dir
 
-    # Token precedence: explicit arg → HUGGINGFACE_HUB_TOKEN → HF_TOKEN
     token = hf_token or os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
     if not token or hf_login is None:
         return
@@ -83,7 +88,11 @@ class RexGradientRetriever:
 
     • Query with a single full-path image.
     • Fixed top-k = 1.
-    • Returns only the combined text (string) or None.
+    • Returns combined text (string) or (text, similarity) if return_score=True.
+
+    When return_score=True, similarity is cosine similarity between the query
+    image embedding and the top hit's stored embedding (computed locally from
+    the returned vector), independent of the index's distance metric.
     """
 
     def __init__(
@@ -105,59 +114,116 @@ class RexGradientRetriever:
         self.client = chromadb.PersistentClient(path=chroma_dir)
         self.col = self.client.get_or_create_collection(name=collection)
 
-    def retrieve(self, query_image_full_path: str) -> Optional[str]:
+    def retrieve(self, query_image_full_path: str, return_score: bool = False):
+
+        def _safe_len(x) -> int:
+            try:
+                return len(x)
+            except Exception:
+                return 0
+
+        def _safe_first(x):
+            # returns first element or None, never boolean-tests arrays
+            if x is None:
+                return None
+            if isinstance(x, (list, tuple)) and _safe_len(x) > 0:
+                return x[0]
+            return None
+
+        def _to_tensor(vec):
+            # vec may be list / list[list] / np.ndarray / nested
+            if vec is None:
+                return None
+            if isinstance(vec, np.ndarray):
+                return torch.tensor(vec, dtype=torch.float32)
+            if isinstance(vec, (list, tuple)):
+                # peel nesting like [[...]] or [[[...]]]
+                v = vec
+                while isinstance(v, (list, tuple)) and _safe_len(v) > 0 and isinstance(v[0], (list, tuple, np.ndarray)):
+                    v = v[0]
+                return torch.tensor(v, dtype=torch.float32)
+            return None
+
         if not os.path.isfile(query_image_full_path):
             raise FileNotFoundError(f"Query image not found: {query_image_full_path}")
 
+        # embed query
         qvec = _embed_image(self.model, self.processor, query_image_full_path, self.device)
+        qvec_t = _to_tensor(qvec)
+        if qvec_t is None:
+            raise RuntimeError("Failed to build query embedding tensor.")
 
         def _do_query(where_filter: Optional[Dict[str, Any]]):
-            # FIX: do not include "ids" (it's always returned)
             return self.col.query(
                 query_embeddings=[qvec],
                 n_results=1,
                 where=where_filter,
-                include=["metadatas", "documents", "distances"],
+                include=["metadatas", "documents", "embeddings", "distances"],
             )
 
-        # Prefer image nodes; if none, allow any
+        # first try only image nodes
         res = _do_query({"modality": "image"})
-        ids = res.get("ids", [[]])[0] if res else []
-        if not ids:
+        ids = _safe_first(res.get("ids")) if isinstance(res, dict) else None
+        if not ids or _safe_len(ids) == 0:
+            # fallback: any node
             res = _do_query(None)
-            ids = res.get("ids", [[]])[0] if res else []
-            if not ids:
-                return None
+            ids = _safe_first(res.get("ids")) if isinstance(res, dict) else None
+            if not ids or _safe_len(ids) == 0:
+                return (None, None) if return_score else None
 
         rid = ids[0]
-        metas = res.get("metadatas", [[]])[0] if res else []
-        docs = res.get("documents", [[]])[0] if res else []
-        meta = metas[0] if metas else {}
-        doc = docs[0] if docs else None
+
+        metas_list = _safe_first(res.get("metadatas"))
+        docs_list = _safe_first(res.get("documents"))
+        embs_list = _safe_first(res.get("embeddings"))
+        dists_list = _safe_first(res.get("distances"))
+
+        meta = metas_list[0] if isinstance(metas_list, (list, tuple)) and _safe_len(metas_list) > 0 else {}
+        doc  = docs_list[0] if isinstance(docs_list, (list, tuple)) and _safe_len(docs_list) > 0 else None
+        remb = embs_list[0] if isinstance(embs_list, (list, tuple, np.ndarray)) and _safe_len(embs_list) > 0 else None
+        dist = dists_list[0] if isinstance(dists_list, (list, tuple, np.ndarray)) and _safe_len(dists_list) > 0 else None
+
         modality = meta.get("modality")
+
+        # similarity (cosine) if we got an embedding back
+        sim = None
+        rvec_t = _to_tensor(remb)
+        if isinstance(rvec_t, torch.Tensor) and rvec_t.numel() > 0:
+            def _cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
+                a = torch.nn.functional.normalize(a.view(1, -1), p=2, dim=-1)
+                b = torch.nn.functional.normalize(b.view(1, -1), p=2, dim=-1)
+                return float((a @ b.T).item())
+            try:
+                sim = _cosine_sim(qvec_t, rvec_t)
+            except Exception as e:
+                print(f"[warn] cosine sim failed: {e}")
+                sim = None
 
         # If top hit is already a text node with a document, return it
         if modality == "text" and isinstance(doc, str) and doc.strip():
-            return doc
+            return (doc, sim) if return_score else doc
 
         # Otherwise, fetch paired text node
-        _, _, text_id = _paired_ids(rid)
-        try:
-            tget = self.col.get(ids=[text_id], include=["metadatas", "documents"])
-            tmeta = (tget.get("metadatas") or [None])[0] if tget else None
-            tdoc = (tget.get("documents") or [None])[0] if tget else None
-            if isinstance(tdoc, str) and tdoc.strip():
-                return tdoc
-            if isinstance(tmeta, dict):
+        base = rid.rsplit(":", 1)[0] if isinstance(rid, str) and ":" in rid else rid
+        text_id = f"{base}:txt" if isinstance(base, str) else None
+        if text_id:
+            try:
+                tget = self.col.get(ids=[text_id], include=["metadatas", "documents"])
+                tmeta = _safe_first(tget.get("metadatas")) if isinstance(tget, dict) else None
+                tdoc  = _safe_first(tget.get("documents")) if isinstance(tget, dict) else None
+                tmeta = tmeta if isinstance(tmeta, dict) else {}
+                tdoc  = tdoc if isinstance(tdoc, str) else None
+                if tdoc and tdoc.strip():
+                    return (tdoc, sim) if return_score else tdoc
                 fallback = tmeta.get("combined") or tmeta.get("combined_text")
                 if isinstance(fallback, str) and fallback.strip():
-                    return fallback
-        except Exception:
-            pass
+                    return (fallback, sim) if return_score else fallback
+            except Exception as e:
+                print(f"[warn] get(text_id) failed: {e}")
 
-        # Final fallback: some image nodes may carry combined text in metadata
+        # Final fallback: sometimes the image node itself carries combined text
         fallback_img = meta.get("combined") or meta.get("combined_text")
         if isinstance(fallback_img, str) and fallback_img.strip():
-            return fallback_img
+            return (fallback_img, sim) if return_score else fallback_img
 
-        return None
+        return (None, sim) if return_score else None
