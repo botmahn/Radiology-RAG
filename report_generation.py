@@ -215,6 +215,152 @@ class MedicalXRayPipeline:
             )
         ]
 
+    # @traceable(name="full_pipeline")
+    # def run_pipeline(
+    #     self,
+    #     query_image_path: str,
+    #     user_prompt: str,
+    #     isd_model: str,
+    #     use_rex: bool = True
+    # ) -> Dict[str, Any]:
+    #     """
+    #     Run the complete RAG pipeline with ISD-Rex support.
+        
+    #     Args:
+    #         image_path: Path to X-ray image
+    #         patient_details: Patient information
+    #         symptoms: Patient symptoms
+    #         use_rex: Whether to use RexGradient image retrieval (default: True)
+        
+    #     Returns:
+    #         Dictionary with all results
+    #     """
+    #     results = {}
+        
+    #     # Step 1: Load image
+    #     query_image_base64 = load_image_for_ollama(query_image_path)
+    #     results['image_loaded'] = True
+        
+    #     # Step 2: Generate ISD (VLM-based)
+    #     st.info("Generating initial diagnosis with MedGemma...")
+    #     isd = generate_initial_diagnosis(
+    #         query_image_base64,
+    #         user_prompt,
+    #         isd_model,
+    #     )
+    #     results['initial_diagnosis'] = isd
+    #     st.success("✓ Initial diagnosis (ISD) generated")
+    #     # ------------------------------------------------------
+    #     # NEW: Display the ISD (Initial Diagnosis) in Streamlit
+    #     # ------------------------------------------------------
+    #     st.write("### 🧠 Initial Diagnosis By MedGemma")
+
+    #     if isinstance(isd, dict):
+    #         # If model outputs something structured
+    #         text = isd.get("text") or isd.get("answer") or isd.get("prediction") or str(isd)
+    #         st.markdown(f"```\n{text}\n```")
+
+    #     elif isinstance(isd, list):
+    #         # Sometimes LLMs send a list of messages or choices
+    #         st.markdown("```\n" + "\n".join(map(str, isd)) + "\n```")
+
+    #     else:
+    #         # Raw string or unknown format
+    #         st.markdown(f"```\n{isd}\n```")
+        
+    #     # Step 2B: Generate ISD-Rex (Image-based retrieval)
+    #     isd_rex = ""
+    #     if use_rex:
+    #         st.info("Retrieving image-based diagnosis (ISD-Rex) from RexGradient...")
+    #         isd_rex, isd_rex_similarity = self.rex_retriever.retrieve(
+    #             query_image_path,
+    #             return_score=True
+    #         )
+
+    #         results['isd_rex'] = isd_rex
+
+    #         # Display status
+    #         st.success(
+    #             f"✓ Image-based diagnosis (ISD-Rex) retrieved | Similarity Score: {isd_rex_similarity * 100.0:.2f}%"
+    #         )
+
+    #         # -----------------------------------------
+    #         # NEW: DISPLAY THE RETRIEVED TEXT PROPERLY
+    #         # -----------------------------------------
+    #         st.write("### 📝 Similar RexGradient Case")
+    #         if isinstance(isd_rex, dict):
+    #             # You can decide what fields you want to display
+    #             text = isd_rex.get("text", "")
+    #             st.markdown(f"```\n{text}\n```")
+    #         elif isinstance(isd_rex, str):
+    #             st.markdown(f"```\n{isd_rex}\n```")
+    #         else:
+    #             st.warning("Unexpected ISD-Rex format")
+    #     else:
+    #         results['isd_rex'] = "RexGradient retrieval disabled"
+        
+    #     # Step 3: Retrieve similar cases (using ISD)
+    #     # Step 4: Rerank
+    #     # st.info("Retrieving similar cases and reranking them...")
+    #     # similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
+    #     # results['retrieved_cases'] = len(similar_docs)
+    #     # results['similar_cases'] = similar_docs
+    #     # st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
+        
+    #     st.info("Retrieving similar cases and reranking them...")
+    #     similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
+    #     results['retrieved_cases'] = len(similar_docs)
+    #     results['similar_cases'] = similar_docs
+
+    #     if similar_docs:
+    #         st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
+
+    #         st.write("### 🔍 MultiCare Similar Cases")
+
+    #         for i, doc in enumerate(similar_docs, 1):
+    #             raw_score = doc.get("score", None)
+    #             case_id = doc.get("case_id", "Unknown")
+    #             text = (doc.get("text") or "")
+    #             text_snippet = (text[:250] + "...") if text else ""
+
+    #             # Safely coerce to float if possible (handles numpy scalars / 0-D arrays)
+    #             score = None
+    #             try:
+    #                 # If it's a numpy array, take the scalar
+    #                 if hasattr(raw_score, "item"):
+    #                     raw_score = raw_score.item()
+    #                 score = float(raw_score)
+    #                 # Clamp to [0, 1] just in case
+    #                 score = max(0.0, min(1.0, score))
+    #             except Exception:
+    #                 score = None
+
+    #             if isinstance(score, float):
+    #                 pct = score * 100.0
+    #                 st.markdown(
+    #                     f"**Case {i}: {case_id}**  \n"
+    #                     f"🧮 **Similarity:** {score:.4f} ({pct:.2f}%)  \n"
+    #                     f"📄 **Excerpt:** {text_snippet}"
+    #                 )
+    #             else:
+    #                 st.markdown(
+    #                     f"**Case {i}: {case_id}**  \n"
+    #                     f"📄 **Excerpt:** {text_snippet}"
+    #                 )
+
+    #     # Step 5: Generate final report (with ISD + ISD-Rex + Similar Cases)
+    #     st.info("📝 Generating detailed report...")
+    #     final_report = generate_final_report(
+    #         query_image_base64,
+    #         user_prompt,
+    #         isd,
+    #         isd_rex,
+    #         similar_docs
+    #     )
+    #     results['final_report'] = final_report
+    #     st.success("✓ Detailed report generated")
+        
+    #     return results
     @traceable(name="full_pipeline")
     def run_pipeline(
         self,
@@ -250,24 +396,52 @@ class MedicalXRayPipeline:
         )
         results['initial_diagnosis'] = isd
         st.success("✓ Initial diagnosis (ISD) generated")
+
         # ------------------------------------------------------
-        # NEW: Display the ISD (Initial Diagnosis) in Streamlit
+        # Display the ISD (Initial Diagnosis) in Streamlit
+        # and normalize to a string so we can inspect it
         # ------------------------------------------------------
         st.write("### 🧠 Initial Diagnosis By MedGemma")
 
         if isinstance(isd, dict):
-            # If model outputs something structured
-            text = isd.get("text") or isd.get("answer") or isd.get("prediction") or str(isd)
-            st.markdown(f"```\n{text}\n```")
-
+            isd_text = isd.get("text") or isd.get("answer") or isd.get("prediction") or str(isd)
         elif isinstance(isd, list):
-            # Sometimes LLMs send a list of messages or choices
-            st.markdown("```\n" + "\n".join(map(str, isd)) + "\n```")
-
+            isd_text = "\n".join(map(str, isd))
         else:
-            # Raw string or unknown format
-            st.markdown(f"```\n{isd}\n```")
-        
+            isd_text = str(isd)
+
+        st.markdown(f"```\n{isd_text}\n```")
+
+        # ------------------------------------------------------
+        # NEW: If ISD is a refusal like
+        # "I am unable to provide a diagnosis",
+        # stop here and ask for a relevant image.
+        # ------------------------------------------------------
+        norm_isd = isd_text.lower()
+
+        # Exact phrase from your example
+        if "i am unable to provide a diagnosis" in norm_isd:
+            st.error("Please choose a relevant Chest X-Ray image.")
+            results["error"] = "initial_diagnosis_unavailable"
+            st.stop()
+
+        # More general safeguard around "diagnos*"
+        if "diagnos" in norm_isd and any(
+            phrase in norm_isd for phrase in [
+                "unable to provide",
+                "cannot provide",
+                "can't provide",
+                "not able to provide",
+                "unable to make",
+                "cannot make",
+                "can't make",
+                "not able to make",
+            ]
+        ):
+            st.error("Please choose a relevant Chest X-Ray image.")
+            results["error"] = "initial_diagnosis_unavailable"
+            st.stop()
+
         # Step 2B: Generate ISD-Rex (Image-based retrieval)
         isd_rex = ""
         if use_rex:
@@ -285,11 +459,10 @@ class MedicalXRayPipeline:
             )
 
             # -----------------------------------------
-            # NEW: DISPLAY THE RETRIEVED TEXT PROPERLY
+            # DISPLAY THE RETRIEVED TEXT PROPERLY
             # -----------------------------------------
             st.write("### 📝 Similar RexGradient Case")
             if isinstance(isd_rex, dict):
-                # You can decide what fields you want to display
                 text = isd_rex.get("text", "")
                 st.markdown(f"```\n{text}\n```")
             elif isinstance(isd_rex, str):
@@ -299,16 +472,9 @@ class MedicalXRayPipeline:
         else:
             results['isd_rex'] = "RexGradient retrieval disabled"
         
-        # Step 3: Retrieve similar cases (using ISD)
-        # Step 4: Rerank
-        # st.info("Retrieving similar cases and reranking them...")
-        # similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
-        # results['retrieved_cases'] = len(similar_docs)
-        # results['similar_cases'] = similar_docs
-        # st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
-        
+        # Step 3 & 4: Retrieve similar cases (using ISD) and rerank
         st.info("Retrieving similar cases and reranking them...")
-        similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
+        similar_docs = self.mc_retriever.retrieve(isd_text, k=3, rerank_top_n=0)
         results['retrieved_cases'] = len(similar_docs)
         results['similar_cases'] = similar_docs
 
@@ -326,11 +492,9 @@ class MedicalXRayPipeline:
                 # Safely coerce to float if possible (handles numpy scalars / 0-D arrays)
                 score = None
                 try:
-                    # If it's a numpy array, take the scalar
                     if hasattr(raw_score, "item"):
                         raw_score = raw_score.item()
                     score = float(raw_score)
-                    # Clamp to [0, 1] just in case
                     score = max(0.0, min(1.0, score))
                 except Exception:
                     score = None
@@ -353,7 +517,7 @@ class MedicalXRayPipeline:
         final_report = generate_final_report(
             query_image_base64,
             user_prompt,
-            isd,
+            isd_text,
             isd_rex,
             similar_docs
         )
@@ -361,6 +525,7 @@ class MedicalXRayPipeline:
         st.success("✓ Detailed report generated")
         
         return results
+
     
 def main(args):
 

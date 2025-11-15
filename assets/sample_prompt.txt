@@ -1,0 +1,38 @@
+==== Context ====
+Generate a detailed diagnosis report for the given x-ray and the following patient:
+Name: Kendall Jenner
+Age: 30
+Gender: Female
+Symptoms: Shortness of breath and pain in chest
+
+==== INITIAL ASSESSMENT ====:
+The chest X-ray reveals bilateral pleural effusions, appearing as hazy densities in the lower lung fields. There is also evidence of pulmonary edema, which can manifest as increased interstitial markings. The heart size appears within normal limits.
+
+==== IMAGE-BASED REFERENCE ====:
+Patient Details: They are a female aged 22 months. Patient History: rm 18 d breathing. Findings: There is slight thickening of the perihilar markings on the LEFT compatible with interstitial pneumonia or atelectasis. No consolidated pulmonary infiltrates are seen. Heart size is normal. No acute bony abnormalities are noted. There is slight thickening of the perihilar markings on the LEFT compatible with minimal interstitial pneumonitis or atelectasis.
+
+==== REFERENCE CASES (Similar cases for context) ====:
+Case-ID: PMC9981333_01
+Patient-Age:64
+Patient-Sex:Female
+Case-Report:we present a 64-year-old female with a past medical history of arterial hypertension, nonobstructive coronary artery disease, chronic heart failure (ef 35-40%), chronic obstructive pulmonary disease (copd) on long-term oxygen therapy (lto2), obstructive sleep apnea (osa)/hypoventilation syndrome, atrial flutter/atrial fibrillation with a loop recorder on rivaroxaban, morbid obesity, and chronic venous stasis who presented to the emergency department with the chief complaints of nausea, vomiting, and diarrhea associated with shortness of breath. the patient reported family members with similar symptoms (gastroenteritis) for the past four days. upon presentation, the patient was hypothermic with a temperature of 96.1 f in triage, with laboured breathing and pursed lips. ems reported that the patient tried continuous positive airway pressure (cpap) at home without resolution of symptoms. the patient denied having chest pain and coughing but reported heart palpitations. the patient's vitals were reported as hr: 200 bpm, respiratory rate: 50 bpm, blood pressure: 180/114 mmhg, with a significant increase in work of breathing. the patient was placed on bilevel positive airway pressure (bipap) with a resolution of tachypnea, however, the heart rate remained elevated. the chest x-ray (cxr) demonstrated cardiomegaly with hazy perihilar and lower lobe opacities and questionable small pleural effusions. findings were consistent with interstitial edema/fluid overload, with the possibility of infection not excluded (figure 1). ekg on admission prior to amiodarone infusion was significant for atrial flutter with 2:1 block (figure 2). the patient received diltiazem 20 mg and 35 mg iv push (ivp) with no improvement. metoprolol tartrate 5 mg iv push was given but despite the intervention, the patient remained with atrial flutter/atrial fibrillation rapid ventricular response (rvr) with hr 140-150 bpm. cardiology was consulted, and the patient was given both an amiodarone bolus and an infusion before being transferred to the icu
+
+Case-ID: PMC6701999_01
+Patient-Age:71
+Patient-Sex:Female
+Case-Report:53.8 mmhg under room air. the serum creatine kinase and aldolase, as well as plasma brain natriuretic peptide levels were normal. pulmonary function tests could not be carried out because of the patient's hearing loss, blurred vision and reduced mental capacity. the electrocardiography and echocardiography findings were normal. chest radiography showed ground-glass shadows in the bilateral lower lung fields (fig. 2a). chest computed tomography (ct) showed ground-glass opacities and consolidations in bilateral lower lobes (fig. 2b) and some bilateral pleural and pericardial effusions (fig. 2c). analyses of bronchoalveolar lavage fluid (balf) revealed a cell count of 1.6x105/ml, with a cell differential of 18.0% macrophages, 47.0% lymphocytes, 24.0% neutrophils, 10.0% eosinophils, 1.0% basophils and a cd4/cd8 ratio of 1.0. no microorganisms were detected in balf cultures. a transbronchial biopsy specimen obtained from the left lower lung lobe revealed alveolar septal thickening, inflammatory cell infiltration and organizing pneumonia (fig. 3). based on a diagnosis of anti-jo-1 antibody-positive interstitial pneumonia, systemic corticosteroid therapy with prednisolone 20 mg per day was started, which relieved her symptoms. the chest radiology findings of interstitial pneumonia as well as pleural and pericardial effusions, hypoxemia, elevated serum lactate dehydrogenase, c-reactive protein, krebs von den lungen-6 and surfactant protein-d improved. prednisolone was tapered four months later to 10 mg daily and interstitial pneumonia did not recur thereafter.
+
+Case-ID: PMC4745326_01
+Patient-Age:24
+Patient-Sex:Female
+Case-Report:a 24-year-old african american female presented at four-week gestation with a nonproductive cough and severe shortness of breath that began four days prior with progressive worsening. the patient reported no history of recent travel. oxygen was administered via nasal cannula and was well tolerated. on physical examination, the patient was tachycardic (126 bpm) and tachypneic (36 breaths/min); temperature was 36.9 c; blood pressure was 132/81 mm hg; and peripheral oxygen saturation was 98%. pulmonary auscultation revealed diffuse wheezing and diminished breathing sounds in bilateral lung bases. echocardiogram ruled out valvular disease and myocardial wall abnormalities. laboratory tests at the time of admission revealed an arterial blood gas analysis within normal limits, anemia (hemoglobin 11.3 mg/dl, hematocrit 34.1), and a normal platelet count (339,000). chest x-ray revealed bilateral lung opacities with relative sparing of the right upper lobe and left pleural effusions (figure 1(a)). computed tomography (ct) scan showed multifocal, bilateral, predominantly peripheral airspace opacities (figure 1(b)). a nonspecific differential for this pattern of distribution included eosinophilic lung disease, sarcoidosis, pulmonary infarction, cryptogenic organizing pneumonia, and chronic interstitial lung disease with atelectatic components at the dependent regions of both lungs. no pulmonary emboli to the segmental arteries were found. she was admitted for treatment of community-acquired pneumonia and developed hemoptysis two days after admission, only completing four days of azithromycin and ceftriaxone. a bronchoscopy with lavage was performed. the bronchial cytology sample showed numerous macrophages, some with cytoplasmic vacuoles, and abundant blood, suggestive of diffuse alveolar hemorrhage. she was subsequently transferred to the medical intensive care unit (micu) with a differential diagnosis of systemic lupus erythematosus, wegener's granulomatosis, pulmonary capillary hemangiomatosis, and other autoimmune and
+
+==== Instructions ====
+Based on the chest X-ray image and all provided information above, generate a structured radiology report with the following sections:
+
+1. TECHNIQUE: Describe the imaging technique
+2. FINDINGS: Detailed description of radiographic findings
+3. IMPRESSION: Summary diagnosis and key findings
+4. RECOMMENDATIONS: Follow-up care and additional studies if needed
+
+Be thorough, professional, and clinically accurate. Consider all the provided context.
