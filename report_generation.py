@@ -6,6 +6,7 @@ import datetime
 import json
 import re
 import math
+import requests
 import streamlit as st
 st.cache_data.clear()
 st.cache_resource.clear()
@@ -86,6 +87,162 @@ def parse_email_request(text: str) -> str | None:
     m = EMAIL_REGEX.search(text.strip())
     return m.group(2) if m else None
 
+def fetch_wikipedia_summary(
+    query: str,
+    max_chars: int = 1500,
+    lang: str = "en",
+) -> str:
+    """
+    Fetch a short summary from Wikipedia for the given query.
+
+    Strategy:
+    1. Use the MediaWiki search API to find the most relevant page.
+    2. Use the REST summary API on the best title.
+    Returns an empty string on error or no results.
+    """
+    if not query.strip():
+        return ""
+
+    try:
+        # Use the first line as the search query (ISD may be multi-line)
+        search_text = query.strip().splitlines()[0]
+
+        # 1) Search Wikipedia for the query
+        search_url = f"https://{lang}.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": search_text,
+            "format": "json",
+            "srlimit": 1,
+        }
+        search_resp = requests.get(
+            search_url,
+            params=search_params,
+            timeout=5,
+            headers={"User-Agent": "RadRAG/0.1 (contact: you@example.com)"},
+        )
+        search_resp.raise_for_status()
+        search_data = search_resp.json()
+        matches = search_data.get("query", {}).get("search", [])
+
+        if not matches:
+            # No good Wikipedia match
+            return ""
+
+        # Take the best match title
+        title = matches[0].get("title")
+        if not title:
+            return ""
+
+        # 2) Fetch the summary for that title
+        title_slug = title.replace(" ", "_")
+        summary_url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title_slug}"
+        summary_resp = requests.get(
+            summary_url,
+            timeout=5,
+            headers={"User-Agent": "RadRAG/0.1 (contact: you@example.com)"},
+        )
+        if summary_resp.status_code != 200:
+            return ""
+
+        summary_data = summary_resp.json()
+        summary = summary_data.get("extract", "") or ""
+        return summary[:max_chars].strip()
+
+    except Exception as e:
+        # For debugging, you can log this if you want:
+        # st.write(f"Wikipedia error: {e}")
+        return ""
+
+
+def fetch_pubmed_summaries(
+    query: str,
+    max_results: int = 3,
+    email: str | None = None,
+    api_key: str | None = None,
+    max_chars: int = 4000,
+) -> str:
+    """
+    Fetch a few PubMed abstracts using NCBI E-utilities.
+
+    Strategy:
+    1. ESearch to get up to `max_results` PMIDs for the query.
+    2. EFetch to retrieve abstracts as plain text.
+    3. Return a single text block (titles + abstracts).
+    
+    Returns an empty string on error or no results.
+
+    For heavier use, set env vars:
+      - NCBI_EMAIL
+      - NCBI_API_KEY
+    """
+    if not query.strip():
+        return ""
+
+    email = email or os.environ.get("NCBI_EMAIL")
+    api_key = api_key or os.environ.get("NCBI_API_KEY")
+
+    try:
+        # --- 1) ESearch: find PMIDs for the query ---
+        esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        esearch_params = {
+            "db": "pubmed",
+            "term": query.strip(),
+            "retmax": str(max_results),
+            "retmode": "json",
+        }
+        if email:
+            esearch_params["email"] = email
+        if api_key:
+            esearch_params["api_key"] = api_key
+
+        r = requests.get(
+            esearch_url,
+            params=esearch_params,
+            timeout=8,
+            headers={"User-Agent": "RadRAG/0.1 (contact: you@example.com)"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        id_list = data.get("esearchresult", {}).get("idlist", [])
+        if not id_list:
+            return ""
+
+        ids = ",".join(id_list)
+
+        # --- 2) EFetch: get abstracts as plain text ---
+        efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+        efetch_params = {
+            "db": "pubmed",
+            "id": ids,
+            "rettype": "abstract",
+            "retmode": "text",
+        }
+        if email:
+            efetch_params["email"] = email
+        if api_key:
+            efetch_params["api_key"] = api_key
+
+        r2 = requests.get(
+            efetch_url,
+            params=efetch_params,
+            timeout=12,
+            headers={"User-Agent": "RadRAG/0.1 (contact: you@example.com)"},
+        )
+        r2.raise_for_status()
+        text = r2.text.strip()
+
+        # NCBI returns multiple records separated by blank lines.
+        # We can lightly trim and cap total chars.
+        cleaned = re.sub(r"\n{3,}", "\n\n", text)  # squash huge gaps
+        return cleaned[:max_chars].strip()
+
+    except Exception:
+        # For debugging you can uncomment this:
+        # st.write(f"PubMed error: {e}")
+        return ""
+
 @traceable(name="generate_final_report")
 def generate_final_report(
     image_base64: str,
@@ -93,22 +250,11 @@ def generate_final_report(
     isd: str,
     isd_rex: str,
     similar_cases: List[Document],
+    external_context: str = "",
     model: str = "amsaravi/medgemma-4b-it:q8"
 ) -> str:
     """
     Generate detailed medical report using final LLM.
-    
-    Args:
-        image_base64: Base64 encoded X-ray image
-        patient_details: Patient information
-        symptoms: Patient symptoms
-        isd: Initial short diagnosis
-        isd_rex: Image-based diagnosis from RexGradient retrieval
-        similar_cases: Retrieved similar cases
-        model: Ollama model name
-    
-    Returns:
-        Detailed medical report
     """
     cases_text = ""
     # Format similar cases
@@ -118,21 +264,33 @@ def generate_final_report(
         mc_patient_sex = similar_case.get('gender', 'Unknown')
         mc_text = similar_case.get('text', 'Not available')
         
-        case_text = f"Case-ID: {mc_case_id}\nPatient-Age:{mc_patient_age}\nPatient-Sex:{mc_patient_sex}\nCase-Report:{mc_text}\n\n"
+        case_text = (
+            f"Case-ID: {mc_case_id}\n"
+            f"Patient-Age: {mc_patient_age}\n"
+            f"Patient-Sex: {mc_patient_sex}\n"
+            f"Case-Report: {mc_text}\n\n"
+        )
         cases_text += case_text
-    
+
+    if external_context:
+        excon = f"EXTERNAL CONTEXT: {external_context}"
+    else:
+        excon = ""
+
     prompt = f"""INSTRUCTIONS:
 
 {user_prompt}
 
-INITIAL ASSESSMENT:
+INITIAL ASSESSMENT (ISD):
 {isd}
 
-IMAGE-BASED REFERENCE:
+IMAGE-BASED REFERENCE (RexGradient):
 {isd_rex}
 
-REFERENCE CASES (Similar cases for context):
+REFERENCE CASES (MultiCare similar cases):
 {cases_text}
+
+{excon}
 
 Based on the chest X-ray image and all provided information above, generate a structured radiology report with the following sections:
 
@@ -141,7 +299,7 @@ Based on the chest X-ray image and all provided information above, generate a st
 3. IMPRESSION: Summary diagnosis and key findings
 4. RECOMMENDATIONS: Follow-up care and additional studies if needed
 
-Be thorough, professional, and clinically accurate. Consider all the provided context including the RexGradient image match."""
+Be thorough, professional, and clinically accurate. Clearly separate what is directly supported by the image vs. what is contextual evidence from the literature."""
     
     print(f"Final Prompt: {prompt}")
 
@@ -174,6 +332,7 @@ Be thorough, professional, and clinically accurate. Consider all the provided co
             return response['message']['content'].strip()
         except Exception as e2:
             return f"Error generating report: {e2}"
+
 
 class MedicalXRayPipeline:
     
@@ -215,152 +374,6 @@ class MedicalXRayPipeline:
             )
         ]
 
-    # @traceable(name="full_pipeline")
-    # def run_pipeline(
-    #     self,
-    #     query_image_path: str,
-    #     user_prompt: str,
-    #     isd_model: str,
-    #     use_rex: bool = True
-    # ) -> Dict[str, Any]:
-    #     """
-    #     Run the complete RAG pipeline with ISD-Rex support.
-        
-    #     Args:
-    #         image_path: Path to X-ray image
-    #         patient_details: Patient information
-    #         symptoms: Patient symptoms
-    #         use_rex: Whether to use RexGradient image retrieval (default: True)
-        
-    #     Returns:
-    #         Dictionary with all results
-    #     """
-    #     results = {}
-        
-    #     # Step 1: Load image
-    #     query_image_base64 = load_image_for_ollama(query_image_path)
-    #     results['image_loaded'] = True
-        
-    #     # Step 2: Generate ISD (VLM-based)
-    #     st.info("Generating initial diagnosis with MedGemma...")
-    #     isd = generate_initial_diagnosis(
-    #         query_image_base64,
-    #         user_prompt,
-    #         isd_model,
-    #     )
-    #     results['initial_diagnosis'] = isd
-    #     st.success("✓ Initial diagnosis (ISD) generated")
-    #     # ------------------------------------------------------
-    #     # NEW: Display the ISD (Initial Diagnosis) in Streamlit
-    #     # ------------------------------------------------------
-    #     st.write("### 🧠 Initial Diagnosis By MedGemma")
-
-    #     if isinstance(isd, dict):
-    #         # If model outputs something structured
-    #         text = isd.get("text") or isd.get("answer") or isd.get("prediction") or str(isd)
-    #         st.markdown(f"```\n{text}\n```")
-
-    #     elif isinstance(isd, list):
-    #         # Sometimes LLMs send a list of messages or choices
-    #         st.markdown("```\n" + "\n".join(map(str, isd)) + "\n```")
-
-    #     else:
-    #         # Raw string or unknown format
-    #         st.markdown(f"```\n{isd}\n```")
-        
-    #     # Step 2B: Generate ISD-Rex (Image-based retrieval)
-    #     isd_rex = ""
-    #     if use_rex:
-    #         st.info("Retrieving image-based diagnosis (ISD-Rex) from RexGradient...")
-    #         isd_rex, isd_rex_similarity = self.rex_retriever.retrieve(
-    #             query_image_path,
-    #             return_score=True
-    #         )
-
-    #         results['isd_rex'] = isd_rex
-
-    #         # Display status
-    #         st.success(
-    #             f"✓ Image-based diagnosis (ISD-Rex) retrieved | Similarity Score: {isd_rex_similarity * 100.0:.2f}%"
-    #         )
-
-    #         # -----------------------------------------
-    #         # NEW: DISPLAY THE RETRIEVED TEXT PROPERLY
-    #         # -----------------------------------------
-    #         st.write("### 📝 Similar RexGradient Case")
-    #         if isinstance(isd_rex, dict):
-    #             # You can decide what fields you want to display
-    #             text = isd_rex.get("text", "")
-    #             st.markdown(f"```\n{text}\n```")
-    #         elif isinstance(isd_rex, str):
-    #             st.markdown(f"```\n{isd_rex}\n```")
-    #         else:
-    #             st.warning("Unexpected ISD-Rex format")
-    #     else:
-    #         results['isd_rex'] = "RexGradient retrieval disabled"
-        
-    #     # Step 3: Retrieve similar cases (using ISD)
-    #     # Step 4: Rerank
-    #     # st.info("Retrieving similar cases and reranking them...")
-    #     # similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
-    #     # results['retrieved_cases'] = len(similar_docs)
-    #     # results['similar_cases'] = similar_docs
-    #     # st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
-        
-    #     st.info("Retrieving similar cases and reranking them...")
-    #     similar_docs = self.mc_retriever.retrieve(isd, k=3, rerank_top_n=0)
-    #     results['retrieved_cases'] = len(similar_docs)
-    #     results['similar_cases'] = similar_docs
-
-    #     if similar_docs:
-    #         st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
-
-    #         st.write("### 🔍 MultiCare Similar Cases")
-
-    #         for i, doc in enumerate(similar_docs, 1):
-    #             raw_score = doc.get("score", None)
-    #             case_id = doc.get("case_id", "Unknown")
-    #             text = (doc.get("text") or "")
-    #             text_snippet = (text[:250] + "...") if text else ""
-
-    #             # Safely coerce to float if possible (handles numpy scalars / 0-D arrays)
-    #             score = None
-    #             try:
-    #                 # If it's a numpy array, take the scalar
-    #                 if hasattr(raw_score, "item"):
-    #                     raw_score = raw_score.item()
-    #                 score = float(raw_score)
-    #                 # Clamp to [0, 1] just in case
-    #                 score = max(0.0, min(1.0, score))
-    #             except Exception:
-    #                 score = None
-
-    #             if isinstance(score, float):
-    #                 pct = score * 100.0
-    #                 st.markdown(
-    #                     f"**Case {i}: {case_id}**  \n"
-    #                     f"🧮 **Similarity:** {score:.4f} ({pct:.2f}%)  \n"
-    #                     f"📄 **Excerpt:** {text_snippet}"
-    #                 )
-    #             else:
-    #                 st.markdown(
-    #                     f"**Case {i}: {case_id}**  \n"
-    #                     f"📄 **Excerpt:** {text_snippet}"
-    #                 )
-
-    #     # Step 5: Generate final report (with ISD + ISD-Rex + Similar Cases)
-    #     st.info("📝 Generating detailed report...")
-    #     final_report = generate_final_report(
-    #         query_image_base64,
-    #         user_prompt,
-    #         isd,
-    #         isd_rex,
-    #         similar_docs
-    #     )
-    #     results['final_report'] = final_report
-    #     st.success("✓ Detailed report generated")
-        
-    #     return results
     @traceable(name="full_pipeline")
     def run_pipeline(
         self,
@@ -370,16 +383,7 @@ class MedicalXRayPipeline:
         use_rex: bool = True
     ) -> Dict[str, Any]:
         """
-        Run the complete RAG pipeline with ISD-Rex support.
-        
-        Args:
-            image_path: Path to X-ray image
-            patient_details: Patient information
-            symptoms: Patient symptoms
-            use_rex: Whether to use RexGradient image retrieval (default: True)
-        
-        Returns:
-            Dictionary with all results
+        Run the complete RAG pipeline with ISD-Rex + external (Wikipedia/PubMed) support.
         """
         results = {}
         
@@ -413,21 +417,19 @@ class MedicalXRayPipeline:
         st.markdown(f"```\n{isd_text}\n```")
 
         # ------------------------------------------------------
-        # NEW: If ISD is a refusal like
-        # "I am unable to provide a diagnosis",
-        # stop here and ask for a relevant image.
+        # If ISD is a refusal like "I am unable to provide
+        # a diagnosis", stop here and ask for a relevant image.
         # ------------------------------------------------------
         norm_isd = isd_text.lower()
 
-        # Exact phrase from your example
-        if "i am unable to provide a diagnosis" in norm_isd:
+        if "i am unable to provide a diagnosis" in norm_isd or "invalid" in norm_isd:
             st.error("Please choose a relevant Chest X-Ray image.")
             results["error"] = "initial_diagnosis_unavailable"
             st.stop()
 
-        # More general safeguard around "diagnos*"
         if "diagnos" in norm_isd and any(
             phrase in norm_isd for phrase in [
+                "invalid",
                 "unable to provide",
                 "cannot provide",
                 "can't provide",
@@ -442,6 +444,38 @@ class MedicalXRayPipeline:
             results["error"] = "initial_diagnosis_unavailable"
             st.stop()
 
+        wiki_summary = ""
+        pubmed_summary = ""
+        # ------------------------------------------------------
+        # NEW: Wikipedia + PubMed retrieval based on ISD
+        # ------------------------------------------------------
+        # st.info("Fetching external context from Wikipedia and PubMed...")
+        # wiki_summary = fetch_wikipedia_summary(isd_text, max_chars=1500)
+        # pubmed_summary = fetch_pubmed_summaries(isd_text, max_results=3)
+
+        # results["wikipedia_summary"] = wiki_summary
+        # results["pubmed_summary"] = pubmed_summary
+
+        # if wiki_summary:
+        #     st.write("### 🌐 Wikipedia Context")
+        #     st.markdown(f"```\n{wiki_summary}\n```")
+        # else:
+        #     st.info("No relevant Wikipedia summary found (or request failed).")
+
+        # if pubmed_summary:
+        #     st.write("### 📚 PubMed Articles")
+        #     st.markdown(f"```\n{pubmed_summary}\n```")
+        # else:
+        #     st.info("No relevant PubMed articles found (or request failed).")
+
+        # Build a single external_context string for the final report
+        external_context_parts = []
+        if wiki_summary:
+            external_context_parts.append("WIKIPEDIA SUMMARY:\n" + wiki_summary)
+        if pubmed_summary:
+            external_context_parts.append("PUBMED RESULTS:\n" + pubmed_summary)
+        external_context = "\n\n".join(external_context_parts).strip()
+
         # Step 2B: Generate ISD-Rex (Image-based retrieval)
         isd_rex = ""
         if use_rex:
@@ -453,14 +487,10 @@ class MedicalXRayPipeline:
 
             results['isd_rex'] = isd_rex
 
-            # Display status
             st.success(
                 f"✓ Image-based diagnosis (ISD-Rex) retrieved | Similarity Score: {isd_rex_similarity * 100.0:.2f}%"
             )
 
-            # -----------------------------------------
-            # DISPLAY THE RETRIEVED TEXT PROPERLY
-            # -----------------------------------------
             st.write("### 📝 Similar RexGradient Case")
             if isinstance(isd_rex, dict):
                 text = isd_rex.get("text", "")
@@ -474,22 +504,46 @@ class MedicalXRayPipeline:
         
         # Step 3 & 4: Retrieve similar cases (using ISD) and rerank
         st.info("Retrieving similar cases and reranking them...")
-        similar_docs = self.mc_retriever.retrieve(isd_text, k=3, rerank_top_n=0)
+        original_docs = self.mc_retriever.retrieve(isd_text, k=3, rerank_top_n=None)
+        similar_docs = self.mc_retriever.retrieve(isd_text, k=3, rerank_top_n=3)
         results['retrieved_cases'] = len(similar_docs)
         results['similar_cases'] = similar_docs
 
+        # 3️⃣ Build mapping old_index → new_index (with Case IDs)
+        order_indices = []
+        order_case_ids = []
+
+        def doc_key(d):
+            return d.get("case_id") or hash(d.get("text"))
+
+        for doc in similar_docs:
+            key = doc_key(doc)
+
+            orig_idx = next(
+                (i for i, odoc in enumerate(original_docs)
+                if doc_key(odoc) == key),
+                None
+            )
+            order_indices.append(orig_idx)
+            order_case_ids.append(doc.get("case_id", f"idx{orig_idx}"))
+
+        # 4️⃣ Print both on Streamlit
+        arrow_idx = " → ".join(str(i) for i in order_indices)
+        arrow_ids = " → ".join(str(cid) for cid in order_case_ids)
+
+        st.info(f"🔢 **Reranked order (indices):** {arrow_idx}")
+        st.info(f"🆔 **Reranked order (Case IDs):** {arrow_ids}")
+
         if similar_docs:
             st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
-
             st.write("### 🔍 MultiCare Similar Cases")
 
             for i, doc in enumerate(similar_docs, 1):
                 raw_score = doc.get("score", None)
                 case_id = doc.get("case_id", "Unknown")
-                text = (doc.get("text") or "")
+                text = (doc.get("matched_text") or doc.get("text") or "")
                 text_snippet = (text[:250] + "...") if text else ""
 
-                # Safely coerce to float if possible (handles numpy scalars / 0-D arrays)
                 score = None
                 try:
                     if hasattr(raw_score, "item"):
@@ -512,14 +566,15 @@ class MedicalXRayPipeline:
                         f"📄 **Excerpt:** {text_snippet}"
                     )
 
-        # Step 5: Generate final report (with ISD + ISD-Rex + Similar Cases)
+        # Step 5: Generate final report (with ISD + ISD-Rex + Similar Cases + External Context)
         st.info("📝 Generating detailed report...")
         final_report = generate_final_report(
             query_image_base64,
             user_prompt,
             isd_text,
             isd_rex,
-            similar_docs
+            similar_docs,
+            external_context=external_context,
         )
         results['final_report'] = final_report
         st.success("✓ Detailed report generated")

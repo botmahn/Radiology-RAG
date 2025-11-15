@@ -193,16 +193,20 @@ class MedicalMulticareRetriever:
     @staticmethod
     def _to_json(doc: Document, score: Optional[float] = None, distance: Optional[float] = None) -> Dict[str, Any]:
         meta = getattr(doc, "metadata", {}) or {}
-        text = getattr(doc, "page_content", "") or ""
+        full_text = getattr(doc, "page_content", "") or ""
+        matched_text = meta.get("_best_child_text") or full_text
+
         return {
             "case_id": meta.get("case_id"),
             "article_id": meta.get("article_id"),
             "age": meta.get("age"),
             "gender": meta.get("gender"),
-            "text": text,            # FULL parent text
-            "score": score,          # normalized similarity [0..1] if available
-            "distance": distance,    # raw distance (for debugging)
+            "text": full_text,         # full parent
+            "matched_text": matched_text,  # child text score is based on
+            "score": score,            # float in [0,1]
+            "distance": distance,
         }
+
 
     def _make_ollama_llm(self):
         if _OllamaChat is not None:
@@ -262,11 +266,6 @@ class MedicalMulticareRetriever:
     def _aggregate_parent_scores(
         self, child_results: List[Tuple[Document, Optional[float], Optional[float]]]
     ) -> List[Tuple[Document, Optional[float], Optional[float]]]:
-        """
-        Map child chunks to parents and aggregate similarity per parent.
-        Strategy: take MAX similarity per parent; distance follows the child that produced the max-sim.
-        Preserves first-seen order of parents.
-        """
         parent_best_sim: Dict[str, float] = {}
         parent_best_dist: Dict[str, float] = {}
         parent_first_order: List[str] = []
@@ -277,24 +276,42 @@ class MedicalMulticareRetriever:
             pid = self._parent_id_from_meta(meta)
             if not pid:
                 continue
+
             if pid not in parent_first_order:
                 parent_first_order.append(pid)
+
+            parent_doc = parent_doc_cache.get(pid)
+            if not parent_doc:
+                parent = self._fetch_parent_doc(pid)
+                if parent:
+                    parent_doc_cache[pid] = parent
+                    parent_doc = parent
+
             if sim is not None:
                 if (pid not in parent_best_sim) or (sim > parent_best_sim[pid]):
                     parent_best_sim[pid] = sim
                     parent_best_dist[pid] = float(dist) if dist is not None else None
-            if pid not in parent_doc_cache:
-                parent = self._fetch_parent_doc(pid)
-                if parent:
-                    parent_doc_cache[pid] = parent
+
+                    if parent_doc is not None:
+                        best_child_text = getattr(child_doc, "page_content", "") or ""
+                        if not hasattr(parent_doc, "metadata") or parent_doc.metadata is None:
+                            parent_doc.metadata = {}
+                        parent_doc.metadata["_best_child_text"] = best_child_text
 
         aggregated: List[Tuple[Document, Optional[float], Optional[float]]] = []
         for pid in parent_first_order:
             parent_doc = parent_doc_cache.get(pid)
             if not parent_doc:
                 continue
-            aggregated.append((parent_doc, parent_best_sim.get(pid), parent_best_dist.get(pid)))
+            aggregated.append(
+                (
+                    parent_doc,
+                    parent_best_sim.get(pid),
+                    parent_best_dist.get(pid),
+                )
+            )
         return aggregated
+
 
     # ---------------------- LLM re-rank ----------------------
 
@@ -350,7 +367,7 @@ class MedicalMulticareRetriever:
         (affects order only) and still return full parent texts.
 
         Returns: List[dict] with keys:
-          - case_id, article_id, age, gender, text, score (0..1), distance
+          - case_id, article_id, age, gender, text, matched_text, score (0..1), distance
         """
         # 1) First pass: get child chunks WITH distances -> normalized similarity in [0,1]
         child_with_scores = self._similarity_search_children_with_scores(
@@ -359,26 +376,37 @@ class MedicalMulticareRetriever:
 
         # 2) Aggregate by parent (full parent text + max similarity, paired distance)
         parents_with_scores = self._aggregate_parent_scores(child_with_scores)
+        if not parents_with_scores:
+            return []
+
+        # Helper: stable key to identify a parent across steps
+        def parent_key(doc: Document) -> str:
+            meta = getattr(doc, "metadata", {}) or {}
+            return str(
+                meta.get("case_id")
+                or meta.get("article_id")
+                or self._parent_id_from_meta(meta)
+                or id(doc)  # fallback to in-memory id
+            )
 
         # 3) Optional: LLM-based contextual compression/re-ranking (order only)
         if rerank_top_n is not None and rerank_top_n > 0:
-            # keep a map for scores so we can reattach after re-ranking
+            # map from key -> score/dist
             score_map: Dict[str, Optional[float]] = {}
             dist_map: Dict[str, Optional[float]] = {}
+
             for p_doc, sim, dist in parents_with_scores:
-                pid = self._parent_id_from_meta(getattr(p_doc, "metadata", {}) or {}) or ""
-                if pid:
-                    score_map[pid] = sim
-                    dist_map[pid] = dist
+                key = parent_key(p_doc)
+                score_map[key] = sim
+                dist_map[key] = dist
 
             seed_parents = [p for p, _, _ in parents_with_scores]
             reranked_parents = self.rerank_with_llm(query, seed_parents, top_n=rerank_top_n)
 
-            # rebuild (parent, score, distance) in reranked order
             final_pairs: List[Tuple[Document, Optional[float], Optional[float]]] = []
             for p in reranked_parents:
-                pid = self._parent_id_from_meta(getattr(p, "metadata", {}) or {}) or ""
-                final_pairs.append((p, score_map.get(pid), dist_map.get(pid)))
+                key = parent_key(p)
+                final_pairs.append((p, score_map.get(key), dist_map.get(key)))
         else:
             final_pairs = parents_with_scores[:k]
 
