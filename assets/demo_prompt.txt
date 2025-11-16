@@ -1,0 +1,5 @@
+Generate a detailed diagnosis report for the given x-ray and the following patient:
+Name: Kendall Jenner
+Age: 30
+Gender: Female
+Symptoms: Shortness of breath and pain in chest

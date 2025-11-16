@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# pip install chromadb transformers pillow huggingface_hub torch tqdm sentencepiece
 
 import os
 import json
