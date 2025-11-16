@@ -19,23 +19,21 @@ from PIL import Image
 from langchain_community.docstore.document import Document
 from langchain_classic.agents import Tool
 
-#Langsmith
+# Langsmith
 from langsmith import Client
 from langsmith.run_helpers import traceable
 
-#Retrievers
+# Retrievers
 from radrag.retrievers.rexgradient_image_to_text import RexGradientRetriever
 from radrag.retrievers.multicare_text_to_text import MedicalMulticareRetriever
 from radrag.retrievers.medgemma_image_to_text import generate_initial_diagnosis
 
-#Tools
+# Tools
 from radrag.tools.generate_pdf import generate_pdf_report
 from radrag.tools.send_email import send_email_with_pdf
 
-#Config
+# Config
 from helpers_config_chat import load_config, OllamaChatSession
-
-import inspect, sys
 
 import helpers_config_chat as hcc
 import importlib
@@ -91,9 +89,7 @@ def fetch_wikipedia_summary(
     max_chars: int = 1500,
     lang: str = "en",
 ) -> str:
-    """
-    Fetch a short summary from Wikipedia for the given query.
-    """
+    """Fetch a short summary from Wikipedia for the given query."""
     if not query.strip():
         return ""
 
@@ -150,9 +146,7 @@ def fetch_pubmed_summaries(
     api_key: str | None = None,
     max_chars: int = 4000,
 ) -> str:
-    """
-    Fetch a few PubMed abstracts using NCBI E-utilities.
-    """
+    """Fetch a few PubMed abstracts using NCBI E-utilities."""
     if not query.strip():
         return ""
 
@@ -226,6 +220,7 @@ def generate_final_report(
     """
     Generate detailed medical report using final LLM.
     Sections are included only if their corresponding inputs are non-empty.
+    Streamed token-by-token to Streamlit.
     """
     # ---------- Build similar cases text ----------
     cases_text = ""
@@ -281,21 +276,31 @@ def generate_final_report(
 
     print(f"Final Prompt:\n{prompt}")
 
+    # Streaming left-to-right into the app
     try:
         print(f"Generating Final Report with {model}...")
-        response = ollama.chat(
+        placeholder = st.empty()
+        report = ""
+
+        for chunk in ollama.chat(
             model=model,
             messages=[{
                 'role': 'user',
                 'content': prompt,
-                'images': [image_base64]
-            }]
-        )
-        
-        report = response['message']['content'].strip()
+                'images': [image_base64],
+            }],
+            stream=True,
+        ):
+            delta = chunk.get("message", {}).get("content", "")
+            if not delta:
+                continue
+            report += delta
+            # live update
+            placeholder.markdown(report)
+
         print(f"Report: {report}")
-        return report
-    
+        return report.strip()
+
     except Exception as e:
         st.error(f"Error generating final report: {e}")
         try:
@@ -303,14 +308,22 @@ def generate_final_report(
             fallback_prompt = (
                 f"{prompt}\n\nNote: Image analysis was incorporated from the initial assessment."
             )
-            response = ollama.chat(
+            placeholder = st.empty()
+            report = ""
+            for chunk in ollama.chat(
                 model=text_model,
                 messages=[{
                     'role': 'user',
                     'content': fallback_prompt,
-                }]
-            )
-            return response['message']['content'].strip()
+                }],
+                stream=True,
+            ):
+                delta = chunk.get("message", {}).get("content", "")
+                if not delta:
+                    continue
+                report += delta
+                placeholder.markdown(report)
+            return report.strip()
         except Exception as e2:
             return f"Error generating report: {e2}"
 
@@ -326,7 +339,6 @@ class MedicalXRayPipeline:
             multicare_db_collection_name: str = "medical_multicare_text",
             multicare_embedding_model: str = "pritamdeka/S-PubMedBert-MS-MARCO",
             multicare_rerank_model: str = "amsaravi/medgemma-4b-it:q8",
-
     ):
 
         self.mc_retriever = MedicalMulticareRetriever(
@@ -432,7 +444,7 @@ class MedicalXRayPipeline:
         external_context = ""
 
         if enable_rag:
-            # Uncomment to enable external context:
+            # If you want external context, uncomment below:
             # st.info("Fetching external context from Wikipedia and PubMed...")
             # wiki_summary = fetch_wikipedia_summary(isd_text, max_chars=1500)
             # pubmed_summary = fetch_pubmed_summaries(isd_text, max_results=3)
@@ -545,7 +557,7 @@ class MedicalXRayPipeline:
             results['retrieved_cases'] = 0
             results['similar_cases'] = []
 
-        # Step 5: final report
+        # Step 5: final report (streamed)
         st.info("📝 Generating detailed report...")
         final_report = generate_final_report(
             query_image_base64,
@@ -597,6 +609,7 @@ def main(args):
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "chat_session" not in st.session_state:
+        # still created, but we now stream via ollama directly
         st.session_state.chat_session = OllamaChatSession(
             model=cfg["models"].get("chat_model", "amsaravi/medgemma-4b-it:q8"),
             temperature=float(cfg["ollama"].get("temperature", 0.2)),
@@ -604,7 +617,8 @@ def main(args):
             num_ctx=int(cfg["ollama"].get("num_ctx", 4096)),
         )
 
-    st.subheader("(1) Upload Chest X-Ray")
+    # ---- Upload (optional) ----
+    st.subheader("(1) Upload Chest X-Ray (optional)")
     uploaded_file = st.file_uploader("Upload PNG/JPG/JPEG", type=["png", "jpg", "jpeg"])
     if uploaded_file:
         img = Image.open(uploaded_file).convert("RGB")
@@ -615,174 +629,218 @@ def main(args):
         st.session_state.temp_image_path = tmp_path
         st.success("Image uploaded.")
 
-    st.subheader("(2) Enter your request (include patient details)")
-    user_prompt = st.text_area(
-        "Example:\nGenerate a medical diagnosis for the uploaded X-ray.\n"
-        "Name: Elizabeth Hurley, Age: 59, Gender: Female,\n"
-        "Indications: Shortness of breath and chest pain.",
-        height=120,
-    )
-
-    rag_enabled = st.toggle(
-        "Enable RAG retrievals (RexGradient, MultiCare similar cases, External context)",
+    # ---- Toggle report generation ----
+    report_enabled = st.toggle(
+        "Enable structured report generation (RadRAG mode)",
         value=True,
         help=(
-            "When enabled, the system will retrieve image-based cases (RexGradient), "
-            "text-based similar cases (MultiCare), and external context. "
-            "When disabled, only the VLM-based initial diagnosis (ISD) is used to generate the final report."
+            "When enabled, you can generate a full structured radiology report using the image and text above. "
+            "When disabled, this app behaves as a normal chat with the Ollama model; uploading an image is optional."
         ),
     )
 
-    if st.button("🚀 Generate Full Report", type="primary", use_container_width=True):
-        if not st.session_state.pipeline:
-            st.error("Pipeline is not initialized.")
-        elif not st.session_state.temp_image_path:
-            st.error("Please upload an X-Ray image first.")
-        elif not user_prompt.strip():
-            st.error("Please enter a request/prompt with patient details.")
-        else:
-            st.session_state.final_report = None
-            st.session_state.pdf_path = None
-            st.session_state.messages = []
-
-            with st.spinner("Running full analysis pipeline..."):
-                try:
-                    results = st.session_state.pipeline.run_pipeline(
-                        query_image_path=st.session_state.temp_image_path,
-                        user_prompt=user_prompt,
-                        isd_model=cfg["models"].get("isd_model", "amsaravi/medgemma-4b-it:q8"),
-                        use_rex=bool(cfg["rag"].get("use_rex", False)) and rag_enabled,
-                        enable_rag=rag_enabled,
-                    )
-                    st.session_state.final_report = results.get("final_report")
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": f"### 🩻 Final Radiology Report\n\n{st.session_state.final_report}"
-                    })
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": "Report generated successfully! You can chat freely now, or say “Generate a PDF of this report” / “Send an email to you@host.com”."
-                    })
-                    st.success("Report Generated!")
-                except Exception as e:
-                    st.error(f"Pipeline failed: {e}")
-                    st.session_state.messages.append({"role": "assistant", "content": f"Sorry, the pipeline failed: {e}"})
-
-    # ---- Layout: Report + Chat ----
-    col1, col2 = st.columns([2, 1], gap="large")
-
-    with col1:
-        st.header("Generated Report")
-        if st.session_state.final_report:
-            st.markdown(st.session_state.final_report)
-        else:
-            st.info("Upload an image, enter your prompt, and click **Generate Full Report**.")
-
-    with col2:
-        st.header("Actions / Chat")
-
-        # show entire chat history first
-        for m in st.session_state.messages:
-            with st.chat_message(m["role"]):
-                st.markdown(m["content"])
-
-        # input is ALWAYS rendered last in this column
-        prompt = st.chat_input(
-            "💬 Ask follow-up questions or say 'Generate a PDF of this report' / 'Send an email to you@host.com'"
+    # ---- If report generation is enabled, show request box + RAG toggle + button ----
+    if report_enabled:
+        st.subheader("(2) Enter your request (include patient details)")
+        user_prompt = st.text_area(
+            "Example:\nGenerate a medical diagnosis for the uploaded X-ray.\n"
+            "Name: Elizabeth Hurley, Age: 59, Gender: Female,\n"
+            "Indications: Shortness of breath and chest pain.",
+            height=120,
         )
 
-        if prompt:
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
+        rag_enabled = st.toggle(
+            "Enable RAG retrievals (RexGradient, MultiCare similar cases, External context)",
+            value=True,
+            help=(
+                "When enabled, the system will retrieve image-based cases (RexGradient), "
+                "text-based similar cases (MultiCare), and external context. "
+                "When disabled, only the VLM-based initial diagnosis (ISD) is used to generate the final report."
+            ),
+        )
 
-            recipient_email = parse_email_request(prompt)
-            name_match = re.search(r"\bName\s*:\s*([^\n,]+)", user_prompt or "", flags=re.IGNORECASE)
-            patient_name_for_email = (name_match.group(1).strip() if name_match else "Patient")
-
-            response_text = None
-
-            # A) PDF intent
-            if is_pdf_request(prompt):
-                with st.chat_message("assistant"):
-                    if not st.session_state.final_report:
-                        response_text = "Generate a report first."
-                        st.warning(response_text)
-                    elif not st.session_state.temp_image_path:
-                        response_text = "Please upload an X-Ray image first."
-                        st.warning(response_text)
-                    else:
-                        with st.spinner("Generating PDF…"):
-                            try:
-                                pdf_path = generate_pdf_report(
-                                    patient_details=user_prompt,
-                                    symptoms="",
-                                    final_report=st.session_state.final_report,
-                                    image_path=st.session_state.temp_image_path,
-                                )
-                                st.session_state.pdf_path = pdf_path
-                                with open(pdf_path, "rb") as f:
-                                    st.download_button(
-                                        label="📥 Download Report PDF",
-                                        data=f,
-                                        file_name=os.path.basename(pdf_path),
-                                        mime="application/pdf",
-                                    )
-                                response_text = "PDF report created."
-                                st.success(response_text)
-                            except Exception as e:
-                                response_text = f"Failed to generate PDF: {e}"
-                                st.error(response_text)
-                st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-            # B) Email intent (only if not a pure PDF-only intent)
-            elif recipient_email:
-                with st.chat_message("assistant"):
-                    if not st.session_state.pdf_path:
-                        response_text = "Please generate a PDF first."
-                        st.warning(response_text)
-                    else:
-                        sender_email = os.environ.get("SENDER_EMAIL")
-                        sender_password = os.environ.get("SENDER_PASSWORD")
-                        if not sender_email or not sender_password:
-                            response_text = "Email creds not set (SENDER_EMAIL, SENDER_PASSWORD)."
-                            st.error(response_text)
-                        else:
-                            result = send_email_with_pdf(
-                                recipient_email=recipient_email,
-                                pdf_path=st.session_state.pdf_path,
-                                patient_name=patient_name_for_email,
-                                sender_email=sender_email,
-                                sender_password=sender_password,
-                            )
-                            response_text = result
-                            (st.success if result.lower().startswith("email sent") else st.error)(result)
-                st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-            # C) Otherwise → Normal chat (NO RAG) using Ollama ONLY
+        if st.button("🚀 Generate Full Report", type="primary", use_container_width=True):
+            if not st.session_state.pipeline:
+                st.error("Pipeline is not initialized.")
+            elif not st.session_state.temp_image_path:
+                st.error("Please upload an X-Ray image first.")
+            elif not user_prompt.strip():
+                st.error("Please enter a request/prompt with patient details.")
             else:
-                with st.chat_message("assistant"):
+                st.session_state.final_report = None
+                st.session_state.pdf_path = None
+                st.session_state.messages = []
+
+                with st.spinner("Running full analysis pipeline..."):
                     try:
-                        def _build_history(max_turns: int = 20) -> list[dict]:
-                            msgs = st.session_state.messages[-max_turns:]
-                            history = []
-                            for m in msgs:
-                                role = m.get("role", "user")
-                                content = str(m.get("content", ""))
-                                if content.strip():
-                                    history.append({"role": role, "content": content})
-                            return history
-
-                        history = _build_history(max_turns=20)
-                        reply = st.session_state.chat_session.ask(prompt, history=history)
-
-                        st.markdown(reply)
-                        st.session_state.messages.append({"role": "assistant", "content": reply})
-
+                        results = st.session_state.pipeline.run_pipeline(
+                            query_image_path=st.session_state.temp_image_path,
+                            user_prompt=user_prompt,
+                            isd_model=cfg["models"].get("isd_model", "amsaravi/medgemma-4b-it:q8"),
+                            use_rex=bool(cfg["rag"].get("use_rex", False)) and rag_enabled,
+                            enable_rag=rag_enabled,
+                        )
+                        st.session_state.final_report = results.get("final_report")
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"### 🩻 Final Radiology Report\n\n{st.session_state.final_report}"
+                        })
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": "Report generated successfully! You can chat freely now, or say “Generate a PDF of this report” / “Send an email to you@host.com”."
+                        })
+                        st.success("Report Generated!")
                     except Exception as e:
-                        msg = f"Ollama chat failed: {e}"
-                        st.error(msg)
-                        st.session_state.messages.append({"role": "assistant", "content": msg})
+                        st.error(f"Pipeline failed: {e}")
+                        st.session_state.messages.append({"role": "assistant", "content": f"Sorry, the pipeline failed: {e}"})
+    else:
+        # When report generation is disabled, we don't need the text box here.
+        user_prompt = ""
+        st.info(
+            "Structured report generation is currently **disabled**. "
+            "You can still upload an image (optional) and use the free chat below."
+        )
+
+    # ---- Single-column layout: Report (if any) + Chat below ----
+    st.header("Generated Report")
+    if report_enabled and st.session_state.final_report:
+        st.markdown(st.session_state.final_report)
+    elif report_enabled:
+        st.info("Upload an image, enter your prompt, and click **Generate Full Report**.")
+    else:
+        st.info("Report generation is disabled. Use the chat below for free-form Q&A.")
+
+    st.header("Actions / Chat")
+
+    # Show entire chat history
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+    # Input is ALWAYS rendered last (bottom)
+    prompt = st.chat_input(
+        "💬 Ask follow-up questions, or say 'Generate a PDF of this report' / 'Send an email to you@host.com'"
+    )
+
+    if prompt:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        recipient_email = parse_email_request(prompt)
+        name_match = re.search(r"\bName\s*:\s*([^\n,]+)", user_prompt or "", flags=re.IGNORECASE)
+        patient_name_for_email = (name_match.group(1).strip() if name_match else "Patient")
+
+        response_text = None
+
+        # A) PDF intent
+        if is_pdf_request(prompt):
+            with st.chat_message("assistant"):
+                if not st.session_state.final_report:
+                    response_text = "Generate a report first."
+                    st.warning(response_text)
+                elif not st.session_state.temp_image_path:
+                    response_text = "Please upload an X-Ray image first."
+                    st.warning(response_text)
+                else:
+                    with st.spinner("Generating PDF…"):
+                        try:
+                            pdf_path = generate_pdf_report(
+                                patient_details=user_prompt,
+                                symptoms="",
+                                final_report=st.session_state.final_report,
+                                image_path=st.session_state.temp_image_path,
+                            )
+                            st.session_state.pdf_path = pdf_path
+                            with open(pdf_path, "rb") as f:
+                                st.download_button(
+                                    label="📥 Download Report PDF",
+                                    data=f,
+                                    file_name=os.path.basename(pdf_path),
+                                    mime="application/pdf",
+                                )
+                            response_text = "PDF report created."
+                            st.success(response_text)
+                        except Exception as e:
+                            response_text = f"Failed to generate PDF: {e}"
+                            st.error(response_text)
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+        # B) Email intent
+        elif recipient_email:
+            with st.chat_message("assistant"):
+                if not st.session_state.pdf_path:
+                    response_text = "Please generate a PDF first."
+                    st.warning(response_text)
+                else:
+                    sender_email = os.environ.get("SENDER_EMAIL")
+                    sender_password = os.environ.get("SENDER_PASSWORD")
+                    if not sender_email or not sender_password:
+                        response_text = "Email creds not set (SENDER_EMAIL, SENDER_PASSWORD)."
+                        st.error(response_text)
+                    else:
+                        result = send_email_with_pdf(
+                            recipient_email=recipient_email,
+                            pdf_path=st.session_state.pdf_path,
+                            patient_name=patient_name_for_email,
+                            sender_email=sender_email,
+                            sender_password=sender_password,
+                        )
+                        response_text = result
+                        (st.success if result.lower().startswith("email sent") else st.error)(result)
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+        # C) Otherwise → Normal chat (streamed) using Ollama ONLY
+        else:
+            with st.chat_message("assistant"):
+                try:
+                    def _build_history(max_turns: int = 20) -> list[dict]:
+                        msgs = st.session_state.messages[-max_turns:]
+                        history = []
+                        for m in msgs:
+                            role = m.get("role", "user")
+                            content = str(m.get("content", ""))
+                            if content.strip():
+                                history.append({"role": role, "content": content})
+                        return history
+
+                    history = _build_history(max_turns=20)
+
+                    # In free-chat mode (report disabled), pass image if available
+                    if not report_enabled and st.session_state.temp_image_path:
+                        img_b64 = load_image_for_ollama(st.session_state.temp_image_path)
+                        if history and history[-1]["role"] == "user":
+                            history[-1]["images"] = [img_b64]
+                        else:
+                            history.append({
+                                "role": "user",
+                                "content": prompt,
+                                "images": [img_b64],
+                            })
+
+                    model_name = cfg["models"].get("chat_model", "amsaravi/medgemma-4b-it:q8")
+
+                    # STREAMED response for chat
+                    placeholder = st.empty()
+                    reply = ""
+
+                    for chunk in ollama.chat(
+                        model=model_name,
+                        messages=history,
+                        stream=True,
+                    ):
+                        delta = chunk.get("message", {}).get("content", "")
+                        if not delta:
+                            continue
+                        reply += delta
+                        placeholder.markdown(reply)
+
+                    st.session_state.messages.append({"role": "assistant", "content": reply.strip()})
+
+                except Exception as e:
+                    msg = f"Ollama chat failed: {e}"
+                    st.error(msg)
+                    st.session_state.messages.append({"role": "assistant", "content": msg})
 
 
 if __name__ == "__main__":
