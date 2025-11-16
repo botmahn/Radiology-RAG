@@ -280,6 +280,7 @@ def generate_final_report(
     try:
         print(f"Generating Final Report with {model}...")
         placeholder = st.empty()
+        status = st.empty()      # 👈 status line
         report = ""
 
         for chunk in ollama.chat(
@@ -298,6 +299,9 @@ def generate_final_report(
             # live update
             placeholder.markdown(report)
 
+        # ✅ Signal that report generation is finished
+        status.caption("✅ Report generation finished.")
+
         print(f"Report: {report}")
         return report.strip()
 
@@ -309,6 +313,7 @@ def generate_final_report(
                 f"{prompt}\n\nNote: Image analysis was incorporated from the initial assessment."
             )
             placeholder = st.empty()
+            status = st.empty()   # 👈 status line
             report = ""
             for chunk in ollama.chat(
                 model=text_model,
@@ -323,6 +328,8 @@ def generate_final_report(
                     continue
                 report += delta
                 placeholder.markdown(report)
+
+            status.caption("✅ Report generation finished (fallback model).")
             return report.strip()
         except Exception as e2:
             return f"Error generating report: {e2}"
@@ -618,7 +625,7 @@ def main(args):
         )
 
     # ---- Upload (optional) ----
-    st.subheader("(1) Upload Chest X-Ray (optional)")
+    st.subheader("Upload Chest X-Ray (optional)")
     uploaded_file = st.file_uploader("Upload PNG/JPG/JPEG", type=["png", "jpg", "jpeg"])
     if uploaded_file:
         img = Image.open(uploaded_file).convert("RGB")
@@ -641,7 +648,7 @@ def main(args):
 
     # ---- If report generation is enabled, show request box + RAG toggle + button ----
     if report_enabled:
-        st.subheader("(2) Enter your request (include patient details)")
+        st.subheader("Enter your request")
         user_prompt = st.text_area(
             "Example:\nGenerate a medical diagnosis for the uploaded X-ray.\n"
             "Name: Elizabeth Hurley, Age: 59, Gender: Female,\n"
@@ -792,6 +799,7 @@ def main(args):
 
         # C) Otherwise → Normal chat (streamed) using Ollama ONLY
         else:
+            # 👇 User message is already shown above; now render assistant reply
             with st.chat_message("assistant"):
                 try:
                     def _build_history(max_turns: int = 20) -> list[dict]:
@@ -809,6 +817,7 @@ def main(args):
                     # In free-chat mode (report disabled), pass image if available
                     if not report_enabled and st.session_state.temp_image_path:
                         img_b64 = load_image_for_ollama(st.session_state.temp_image_path)
+                        # attach image to last user message if possible
                         if history and history[-1]["role"] == "user":
                             history[-1]["images"] = [img_b64]
                         else:
@@ -820,8 +829,13 @@ def main(args):
 
                     model_name = cfg["models"].get("chat_model", "amsaravi/medgemma-4b-it:q8")
 
-                    # STREAMED response for chat
-                    placeholder = st.empty()
+                    # 🔄 Local streaming UI: no global dark overlay
+                    text_placeholder = st.empty()   # where the assistant text streams
+                    status_placeholder = st.empty() # small status line
+
+                    # Show a "spinning" style message (no real spinner overlay)
+                    status_placeholder.markdown("🌀 **Generating...**")
+
                     reply = ""
 
                     for chunk in ollama.chat(
@@ -833,14 +847,24 @@ def main(args):
                         if not delta:
                             continue
                         reply += delta
-                        placeholder.markdown(reply)
+                        # Live left-to-right update
+                        text_placeholder.markdown(reply)
 
-                    st.session_state.messages.append({"role": "assistant", "content": reply.strip()})
+                    # ✅ Done signal (no blackout)
+                    status_placeholder.markdown("✅ **Response complete.**")
+
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": reply.strip()}
+                    )
 
                 except Exception as e:
                     msg = f"Ollama chat failed: {e}"
                     st.error(msg)
-                    st.session_state.messages.append({"role": "assistant", "content": msg})
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": msg}
+                    )
+
+
 
 
 if __name__ == "__main__":
