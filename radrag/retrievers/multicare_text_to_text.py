@@ -76,7 +76,7 @@ class MedicalMulticareRetriever:
         child_chunk_size: int = 256,
         hf_token_env_keys: Optional[List[str]] = None,
         # Rerank defaults
-        rerank_model: str = "llama3.2:3b",
+        rerank_model: str = "amsaravi/medgemma-4b-it:q8",
         rerank_temperature: float = 0.0,
     ) -> None:
         self.persist_dir = persist_dir

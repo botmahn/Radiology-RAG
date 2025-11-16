@@ -19,8 +19,7 @@ def generate_initial_diagnosis(
 Patient Details and Indications:
 {patient_details}
 
-Provide only 3-4 lines of a concise initial assessment focusing on the most significant findings. 
-If the provided image is not an X-ray image or if the patient details do not pertain to a medical use-case, return 'invalid'."""
+Provide only 3-4 lines of a concise initial assessment focusing on the most significant findings."""
 
     try:
         response = ollama.chat(

@@ -36,12 +36,8 @@ from radrag.tools.send_email import send_email_with_pdf
 from helpers_config_chat import load_config, OllamaChatSession
 
 import inspect, sys
-# st.write("Running:", sys.argv)
-# st.write("This file:", __file__)
 
 import helpers_config_chat as hcc
-# st.write("helpers_config_chat path:", inspect.getfile(hcc))
-
 import importlib
 importlib.reload(hcc)
 
@@ -79,13 +75,16 @@ def load_image_for_ollama(image_path: str) -> str:
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode('utf-8')
 
+
 def is_pdf_request(text: str) -> bool:
     t = text.strip().lower()
     return any(re.search(p, t, flags=re.IGNORECASE) for p in PDF_PATTERNS)
 
+
 def parse_email_request(text: str) -> str | None:
     m = EMAIL_REGEX.search(text.strip())
     return m.group(2) if m else None
+
 
 def fetch_wikipedia_summary(
     query: str,
@@ -94,20 +93,13 @@ def fetch_wikipedia_summary(
 ) -> str:
     """
     Fetch a short summary from Wikipedia for the given query.
-
-    Strategy:
-    1. Use the MediaWiki search API to find the most relevant page.
-    2. Use the REST summary API on the best title.
-    Returns an empty string on error or no results.
     """
     if not query.strip():
         return ""
 
     try:
-        # Use the first line as the search query (ISD may be multi-line)
         search_text = query.strip().splitlines()[0]
 
-        # 1) Search Wikipedia for the query
         search_url = f"https://{lang}.wikipedia.org/w/api.php"
         search_params = {
             "action": "query",
@@ -127,15 +119,12 @@ def fetch_wikipedia_summary(
         matches = search_data.get("query", {}).get("search", [])
 
         if not matches:
-            # No good Wikipedia match
             return ""
 
-        # Take the best match title
         title = matches[0].get("title")
         if not title:
             return ""
 
-        # 2) Fetch the summary for that title
         title_slug = title.replace(" ", "_")
         summary_url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title_slug}"
         summary_resp = requests.get(
@@ -150,9 +139,7 @@ def fetch_wikipedia_summary(
         summary = summary_data.get("extract", "") or ""
         return summary[:max_chars].strip()
 
-    except Exception as e:
-        # For debugging, you can log this if you want:
-        # st.write(f"Wikipedia error: {e}")
+    except Exception:
         return ""
 
 
@@ -165,17 +152,6 @@ def fetch_pubmed_summaries(
 ) -> str:
     """
     Fetch a few PubMed abstracts using NCBI E-utilities.
-
-    Strategy:
-    1. ESearch to get up to `max_results` PMIDs for the query.
-    2. EFetch to retrieve abstracts as plain text.
-    3. Return a single text block (titles + abstracts).
-    
-    Returns an empty string on error or no results.
-
-    For heavier use, set env vars:
-      - NCBI_EMAIL
-      - NCBI_API_KEY
     """
     if not query.strip():
         return ""
@@ -184,7 +160,6 @@ def fetch_pubmed_summaries(
     api_key = api_key or os.environ.get("NCBI_API_KEY")
 
     try:
-        # --- 1) ESearch: find PMIDs for the query ---
         esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
         esearch_params = {
             "db": "pubmed",
@@ -211,7 +186,6 @@ def fetch_pubmed_summaries(
 
         ids = ",".join(id_list)
 
-        # --- 2) EFetch: get abstracts as plain text ---
         efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
         efetch_params = {
             "db": "pubmed",
@@ -232,16 +206,12 @@ def fetch_pubmed_summaries(
         )
         r2.raise_for_status()
         text = r2.text.strip()
-
-        # NCBI returns multiple records separated by blank lines.
-        # We can lightly trim and cap total chars.
-        cleaned = re.sub(r"\n{3,}", "\n\n", text)  # squash huge gaps
+        cleaned = re.sub(r"\n{3,}", "\n\n", text)
         return cleaned[:max_chars].strip()
 
     except Exception:
-        # For debugging you can uncomment this:
-        # st.write(f"PubMed error: {e}")
         return ""
+
 
 @traceable(name="generate_final_report")
 def generate_final_report(
@@ -249,15 +219,16 @@ def generate_final_report(
     user_prompt: str,
     isd: str,
     isd_rex: str,
-    similar_cases: List[Document],
+    similar_cases: List[Dict[str, Any]],
     external_context: str = "",
     model: str = "amsaravi/medgemma-4b-it:q8"
 ) -> str:
     """
     Generate detailed medical report using final LLM.
+    Sections are included only if their corresponding inputs are non-empty.
     """
+    # ---------- Build similar cases text ----------
     cases_text = ""
-    # Format similar cases
     for similar_case in similar_cases:
         mc_case_id = similar_case.get('case_id', 'PMC6666666_69')
         mc_patient_age = str(similar_case.get('age', 'Unknown'))
@@ -272,36 +243,43 @@ def generate_final_report(
         )
         cases_text += case_text
 
-    if external_context:
-        excon = f"EXTERNAL CONTEXT: {external_context}"
-    else:
-        excon = ""
+    # ---------- Build prompt in pieces ----------
+    blocks: List[str] = []
 
-    prompt = f"""INSTRUCTIONS:
+    # 1) Instructions + user prompt (always present)
+    blocks.append(f"INSTRUCTIONS:\n\n{user_prompt}")
 
-{user_prompt}
+    # 2) ISD (VLM-based) – only if non-empty
+    if isd and str(isd).strip():
+        blocks.append(f"INITIAL ASSESSMENT (ISD):\n{isd}")
 
-INITIAL ASSESSMENT (ISD):
-{isd}
+    # 3) Image-based reference (RexGradient) – only if non-empty
+    if isd_rex and str(isd_rex).strip():
+        blocks.append(f"IMAGE-BASED REFERENCE (RexGradient):\n{isd_rex}")
 
-IMAGE-BASED REFERENCE (RexGradient):
-{isd_rex}
+    # 4) Reference cases – only if we have any
+    if cases_text.strip():
+        blocks.append(f"REFERENCE CASES (MultiCare similar cases):\n{cases_text}")
 
-REFERENCE CASES (MultiCare similar cases):
-{cases_text}
+    # 5) External context – only if provided
+    if external_context and external_context.strip():
+        blocks.append(f"EXTERNAL CONTEXT:\n{external_context}")
 
-{excon}
+    # 6) Final instruction block – always present
+    blocks.append(
+        "Based on the chest X-ray image and all provided information above, "
+        "generate a structured radiology report with the following sections:\n\n"
+        "1. TECHNIQUE: Describe the imaging technique\n"
+        "2. FINDINGS: Detailed description of radiographic findings\n"
+        "3. IMPRESSION: Summary diagnosis and key findings\n"
+        "4. RECOMMENDATIONS: Follow-up care and additional studies if needed\n\n"
+        "Be thorough, professional, and clinically accurate. Clearly separate what is "
+        "directly supported by the image vs. what is contextual evidence from the literature."
+    )
 
-Based on the chest X-ray image and all provided information above, generate a structured radiology report with the following sections:
+    prompt = "\n\n".join(blocks)
 
-1. TECHNIQUE: Describe the imaging technique
-2. FINDINGS: Detailed description of radiographic findings
-3. IMPRESSION: Summary diagnosis and key findings
-4. RECOMMENDATIONS: Follow-up care and additional studies if needed
-
-Be thorough, professional, and clinically accurate. Clearly separate what is directly supported by the image vs. what is contextual evidence from the literature."""
-    
-    print(f"Final Prompt: {prompt}")
+    print(f"Final Prompt:\n{prompt}")
 
     try:
         print(f"Generating Final Report with {model}...")
@@ -322,11 +300,14 @@ Be thorough, professional, and clinically accurate. Clearly separate what is dir
         st.error(f"Error generating final report: {e}")
         try:
             text_model = "amsaravi/medgemma-4b-it:q8"
+            fallback_prompt = (
+                f"{prompt}\n\nNote: Image analysis was incorporated from the initial assessment."
+            )
             response = ollama.chat(
                 model=text_model,
                 messages=[{
                     'role': 'user',
-                    'content': f"{prompt}\n\nNote: Image analysis incorporated from initial assessment."
+                    'content': fallback_prompt,
                 }]
             )
             return response['message']['content'].strip()
@@ -380,12 +361,19 @@ class MedicalXRayPipeline:
         query_image_path: str,
         user_prompt: str,
         isd_model: str,
-        use_rex: bool = True
+        use_rex: bool = True,
+        enable_rag: bool = True,  # global RAG on/off
     ) -> Dict[str, Any]:
         """
         Run the complete RAG pipeline with ISD-Rex + external (Wikipedia/PubMed) support.
+
+        If enable_rag is False:
+          - Skip RexGradient retrieval
+          - Skip MultiCare similar cases retrieval
+          - Skip external context
+          - Only use ISD (VLM-based) + final report generation.
         """
-        results = {}
+        results: Dict[str, Any] = {}
         
         # Step 1: Load image
         query_image_base64 = load_image_for_ollama(query_image_path)
@@ -401,10 +389,7 @@ class MedicalXRayPipeline:
         results['initial_diagnosis'] = isd
         st.success("✓ Initial diagnosis (ISD) generated")
 
-        # ------------------------------------------------------
-        # Display the ISD (Initial Diagnosis) in Streamlit
-        # and normalize to a string so we can inspect it
-        # ------------------------------------------------------
+        # Display ISD and normalize to text
         st.write("### 🧠 Initial Diagnosis By MedGemma")
 
         if isinstance(isd, dict):
@@ -416,10 +401,7 @@ class MedicalXRayPipeline:
 
         st.markdown(f"```\n{isd_text}\n```")
 
-        # ------------------------------------------------------
-        # If ISD is a refusal like "I am unable to provide
-        # a diagnosis", stop here and ask for a relevant image.
-        # ------------------------------------------------------
+        # If ISD is a refusal
         norm_isd = isd_text.lower()
 
         if "i am unable to provide a diagnosis" in norm_isd or "invalid" in norm_isd:
@@ -444,41 +426,31 @@ class MedicalXRayPipeline:
             results["error"] = "initial_diagnosis_unavailable"
             st.stop()
 
+        # External context (Wikipedia + PubMed)
         wiki_summary = ""
         pubmed_summary = ""
-        # ------------------------------------------------------
-        # NEW: Wikipedia + PubMed retrieval based on ISD
-        # ------------------------------------------------------
-        # st.info("Fetching external context from Wikipedia and PubMed...")
-        # wiki_summary = fetch_wikipedia_summary(isd_text, max_chars=1500)
-        # pubmed_summary = fetch_pubmed_summaries(isd_text, max_results=3)
+        external_context = ""
 
-        # results["wikipedia_summary"] = wiki_summary
-        # results["pubmed_summary"] = pubmed_summary
+        if enable_rag:
+            # Uncomment to enable external context:
+            # st.info("Fetching external context from Wikipedia and PubMed...")
+            # wiki_summary = fetch_wikipedia_summary(isd_text, max_chars=1500)
+            # pubmed_summary = fetch_pubmed_summaries(isd_text, max_results=3)
+            # results["wikipedia_summary"] = wiki_summary
+            # results["pubmed_summary"] = pubmed_summary
 
-        # if wiki_summary:
-        #     st.write("### 🌐 Wikipedia Context")
-        #     st.markdown(f"```\n{wiki_summary}\n```")
-        # else:
-        #     st.info("No relevant Wikipedia summary found (or request failed).")
+            external_context_parts = []
+            if wiki_summary:
+                external_context_parts.append("WIKIPEDIA SUMMARY:\n" + wiki_summary)
+            if pubmed_summary:
+                external_context_parts.append("PUBMED RESULTS:\n" + pubmed_summary)
+            external_context = "\n\n".join(external_context_parts).strip()
+        else:
+            external_context = ""
 
-        # if pubmed_summary:
-        #     st.write("### 📚 PubMed Articles")
-        #     st.markdown(f"```\n{pubmed_summary}\n```")
-        # else:
-        #     st.info("No relevant PubMed articles found (or request failed).")
-
-        # Build a single external_context string for the final report
-        external_context_parts = []
-        if wiki_summary:
-            external_context_parts.append("WIKIPEDIA SUMMARY:\n" + wiki_summary)
-        if pubmed_summary:
-            external_context_parts.append("PUBMED RESULTS:\n" + pubmed_summary)
-        external_context = "\n\n".join(external_context_parts).strip()
-
-        # Step 2B: Generate ISD-Rex (Image-based retrieval)
+        # Step 2B: ISD-Rex (image-based retrieval)
         isd_rex = ""
-        if use_rex:
+        if enable_rag and use_rex:
             st.info("Retrieving image-based diagnosis (ISD-Rex) from RexGradient...")
             isd_rex, isd_rex_similarity = self.rex_retriever.retrieve(
                 query_image_path,
@@ -499,74 +471,81 @@ class MedicalXRayPipeline:
                 st.markdown(f"```\n{isd_rex}\n```")
             else:
                 st.warning("Unexpected ISD-Rex format")
+        elif not enable_rag:
+            isd_rex = ""
+            results['isd_rex'] = ""
         else:
+            isd_rex = ""
             results['isd_rex'] = "RexGradient retrieval disabled"
-        
-        # Step 3 & 4: Retrieve similar cases (using ISD) and rerank
-        st.info("Retrieving similar cases and reranking them...")
-        original_docs = self.mc_retriever.retrieve(isd_text, k=3, rerank_top_n=None)
-        similar_docs = self.mc_retriever.retrieve(isd_text, k=3, rerank_top_n=3)
-        results['retrieved_cases'] = len(similar_docs)
-        results['similar_cases'] = similar_docs
 
-        # 3️⃣ Build mapping old_index → new_index (with Case IDs)
-        order_indices = []
-        order_case_ids = []
+        # Step 3 & 4: similar cases
+        similar_docs: List[Dict[str, Any]] = []
 
-        def doc_key(d):
-            return d.get("case_id") or hash(d.get("text"))
+        if enable_rag:
+            st.info("Retrieving similar cases and reranking them...")
+            original_docs = self.mc_retriever.retrieve(isd_text, k=5, rerank_top_n=None)
+            similar_docs = self.mc_retriever.retrieve(isd_text, k=5, rerank_top_n=3)
+            results['retrieved_cases'] = len(similar_docs)
+            results['similar_cases'] = similar_docs
 
-        for doc in similar_docs:
-            key = doc_key(doc)
+            order_indices = []
+            order_case_ids = []
 
-            orig_idx = next(
-                (i for i, odoc in enumerate(original_docs)
-                if doc_key(odoc) == key),
-                None
-            )
-            order_indices.append(orig_idx)
-            order_case_ids.append(doc.get("case_id", f"idx{orig_idx}"))
+            def doc_key(d):
+                return d.get("case_id") or hash(d.get("text"))
 
-        # 4️⃣ Print both on Streamlit
-        arrow_idx = " → ".join(str(i) for i in order_indices)
-        arrow_ids = " → ".join(str(cid) for cid in order_case_ids)
+            for doc in similar_docs:
+                key = doc_key(doc)
+                orig_idx = next(
+                    (i for i, odoc in enumerate(original_docs)
+                     if doc_key(odoc) == key),
+                    None
+                )
+                order_indices.append(orig_idx)
+                order_case_ids.append(doc.get("case_id", f"idx{orig_idx}"))
 
-        st.info(f"🔢 **Reranked order (indices):** {arrow_idx}")
-        st.info(f"🆔 **Reranked order (Case IDs):** {arrow_ids}")
+            arrow_idx = " → ".join(str(i) for i in order_indices)
+            arrow_ids = " → ".join(str(cid) for cid in order_case_ids)
 
-        if similar_docs:
-            st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
-            st.write("### 🔍 MultiCare Similar Cases")
+            st.info(f"🔢 **Reranked order (indices):** {arrow_idx}")
+            st.info(f"🆔 **Reranked order (Case IDs):** {arrow_ids}")
 
-            for i, doc in enumerate(similar_docs, 1):
-                raw_score = doc.get("score", None)
-                case_id = doc.get("case_id", "Unknown")
-                text = (doc.get("matched_text") or doc.get("text") or "")
-                text_snippet = (text[:250] + "...") if text else ""
+            if similar_docs:
+                st.success(f"✓ Retrieved and reranked {len(similar_docs)} similar cases")
+                st.write("### 🔍 MultiCare Similar Cases")
 
-                score = None
-                try:
-                    if hasattr(raw_score, "item"):
-                        raw_score = raw_score.item()
-                    score = float(raw_score)
-                    score = max(0.0, min(1.0, score))
-                except Exception:
+                for i, doc in enumerate(similar_docs, 1):
+                    raw_score = doc.get("score", None)
+                    case_id = doc.get("case_id", "Unknown")
+                    text = (doc.get("matched_text") or doc.get("text") or "")
+                    text_snippet = (text[:250] + "...") if text else ""
+
                     score = None
+                    try:
+                        if hasattr(raw_score, "item"):
+                            raw_score = raw_score.item()
+                        score = float(raw_score)
+                        score = max(0.0, min(1.0, score))
+                    except Exception:
+                        score = None
 
-                if isinstance(score, float):
-                    pct = score * 100.0
-                    st.markdown(
-                        f"**Case {i}: {case_id}**  \n"
-                        f"🧮 **Similarity:** {score:.4f} ({pct:.2f}%)  \n"
-                        f"📄 **Excerpt:** {text_snippet}"
-                    )
-                else:
-                    st.markdown(
-                        f"**Case {i}: {case_id}**  \n"
-                        f"📄 **Excerpt:** {text_snippet}"
-                    )
+                    if isinstance(score, float):
+                        pct = score * 100.0
+                        st.markdown(
+                            f"**Case {i}: {case_id}**  \n"
+                            f"🧮 **Similarity:** {score:.4f} ({pct:.2f}%)  \n"
+                            f"📄 **Excerpt:** {text_snippet}"
+                        )
+                    else:
+                        st.markdown(
+                            f"**Case {i}: {case_id}**  \n"
+                            f"📄 **Excerpt:** {text_snippet}"
+                        )
+        else:
+            results['retrieved_cases'] = 0
+            results['similar_cases'] = []
 
-        # Step 5: Generate final report (with ISD + ISD-Rex + Similar Cases + External Context)
+        # Step 5: final report
         st.info("📝 Generating detailed report...")
         final_report = generate_final_report(
             query_image_base64,
@@ -581,7 +560,7 @@ class MedicalXRayPipeline:
         
         return results
 
-    
+
 def main(args):
 
     st.cache_data.clear()
@@ -618,7 +597,6 @@ def main(args):
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "chat_session" not in st.session_state:
-        # create Ollama-only chat session for post-report conversations
         st.session_state.chat_session = OllamaChatSession(
             model=cfg["models"].get("chat_model", "amsaravi/medgemma-4b-it:q8"),
             temperature=float(cfg["ollama"].get("temperature", 0.2)),
@@ -645,6 +623,16 @@ def main(args):
         height=120,
     )
 
+    rag_enabled = st.toggle(
+        "Enable RAG retrievals (RexGradient, MultiCare similar cases, External context)",
+        value=True,
+        help=(
+            "When enabled, the system will retrieve image-based cases (RexGradient), "
+            "text-based similar cases (MultiCare), and external context. "
+            "When disabled, only the VLM-based initial diagnosis (ISD) is used to generate the final report."
+        ),
+    )
+
     if st.button("🚀 Generate Full Report", type="primary", use_container_width=True):
         if not st.session_state.pipeline:
             st.error("Pipeline is not initialized.")
@@ -663,19 +651,14 @@ def main(args):
                         query_image_path=st.session_state.temp_image_path,
                         user_prompt=user_prompt,
                         isd_model=cfg["models"].get("isd_model", "amsaravi/medgemma-4b-it:q8"),
-                        use_rex=bool(cfg["rag"].get("use_rex", False)),
+                        use_rex=bool(cfg["rag"].get("use_rex", False)) and rag_enabled,
+                        enable_rag=rag_enabled,
                     )
                     st.session_state.final_report = results.get("final_report")
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": f"### 🩻 Final Radiology Report\n\n{st.session_state.final_report}"
                     })
-                    # final_report_text = st.session_state.final_report or ""
-                    # if final_report_text.strip():
-                    #     st.session_state.messages.append({
-                    #         "role": "assistant",
-                    #         "content": "### 📝 Final Report\n\n" + final_report_text
-                    #     })
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": "Report generated successfully! You can chat freely now, or say “Generate a PDF of this report” / “Send an email to you@host.com”."
@@ -703,7 +686,7 @@ def main(args):
             with st.chat_message(m["role"]):
                 st.markdown(m["content"])
 
-        # now place the chat input AFTER the history
+        # input is ALWAYS rendered last in this column
         prompt = st.chat_input(
             "💬 Ask follow-up questions or say 'Generate a PDF of this report' / 'Send an email to you@host.com'"
         )
@@ -713,15 +696,12 @@ def main(args):
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-
-            # intent helpers you already have
             recipient_email = parse_email_request(prompt)
-
-            # quick name extraction for email subject
             name_match = re.search(r"\bName\s*:\s*([^\n,]+)", user_prompt or "", flags=re.IGNORECASE)
             patient_name_for_email = (name_match.group(1).strip() if name_match else "Patient")
 
-            # Branching:
+            response_text = None
+
             # A) PDF intent
             if is_pdf_request(prompt):
                 with st.chat_message("assistant"):
@@ -754,10 +734,9 @@ def main(args):
                                 response_text = f"Failed to generate PDF: {e}"
                                 st.error(response_text)
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
-                return
 
-            # B) Email intent
-            if recipient_email:
+            # B) Email intent (only if not a pure PDF-only intent)
+            elif recipient_email:
                 with st.chat_message("assistant"):
                     if not st.session_state.pdf_path:
                         response_text = "Please generate a PDF first."
@@ -779,37 +758,40 @@ def main(args):
                             response_text = result
                             (st.success if result.lower().startswith("email sent") else st.error)(result)
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
-                return
 
             # C) Otherwise → Normal chat (NO RAG) using Ollama ONLY
-            with st.chat_message("assistant"):
-                try:
-                    # 🧠 Build a compact history from the last 20 messages, including the final report
-                    def _build_history(max_turns: int = 20) -> list[dict]:
-                        msgs = st.session_state.messages[-max_turns:]
-                        history = []
-                        for m in msgs:
-                            role = m.get("role", "user")
-                            content = str(m.get("content", ""))
-                            if content.strip():
-                                history.append({"role": role, "content": content})
-                        return history
+            else:
+                with st.chat_message("assistant"):
+                    try:
+                        def _build_history(max_turns: int = 20) -> list[dict]:
+                            msgs = st.session_state.messages[-max_turns:]
+                            history = []
+                            for m in msgs:
+                                role = m.get("role", "user")
+                                content = str(m.get("content", ""))
+                                if content.strip():
+                                    history.append({"role": role, "content": content})
+                            return history
 
-                    # 🧩 Construct conversation context and call Ollama with full history
-                    history = _build_history(max_turns=20)
-                    reply = st.session_state.chat_session.ask(prompt, history=history)
+                        history = _build_history(max_turns=20)
+                        reply = st.session_state.chat_session.ask(prompt, history=history)
 
-                    st.markdown(reply)
-                    st.session_state.messages.append({"role": "assistant", "content": reply})
+                        st.markdown(reply)
+                        st.session_state.messages.append({"role": "assistant", "content": reply})
 
-                except Exception as e:
-                    msg = f"Ollama chat failed: {e}"
-                    st.error(msg)
-                    st.session_state.messages.append({"role": "assistant", "content": msg})
+                    except Exception as e:
+                        msg = f"Ollama chat failed: {e}"
+                        st.error(msg)
+                        st.session_state.messages.append({"role": "assistant", "content": msg})
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="/Users/namanmishra/Documents/Code/iiith_courses/lma/major_project/Radiology-RAG/configs/reportgen_config.yaml", help="Path to YAML configuration file")
-    args, _ = parser.parse_known_args()  # use parse_known_args() so Streamlit CLI flags don't break
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="./configs/reportgen_config.yaml",
+        help="Path to YAML configuration file",
+    )
+    args, _ = parser.parse_known_args()
     main(args)
