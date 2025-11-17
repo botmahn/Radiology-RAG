@@ -1,7 +1,7 @@
 import os
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_API_KEY"] = "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"
+os.environ["LANGCHAIN_API_KEY"] = ""
 os.environ["LANGCHAIN_PROJECT"] = "Radiology RAG Assistant"
 import re
 import torch
@@ -55,7 +55,7 @@ EMBEDDING_MODEL_NAME = "pritamdeka/S-PubMedBert-MS-MARCO"
 #  HF / CACHE CONFIGURATION
 # =========================
 HF_CACHE_DIR = "/ssd_scratch/cvit/saket/hf_cache"
-HF_TOKEN = "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"
+HF_TOKEN = ""
 
 os.environ["HF_HOME"] = HF_CACHE_DIR
 os.environ["TRANSFORMERS_CACHE"] = HF_CACHE_DIR
