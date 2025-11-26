@@ -1,5 +1,5 @@
 # Radiology-RAG
-# LMA Major Project - Radiology Imaging Techniques
+## LMA Major Project - Radiology Imaging Techniques
 ## Team OppenAImer - Naman Mishra and Vempaty Saket
 
 ---
